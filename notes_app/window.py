@@ -122,6 +122,18 @@ class MainWindow(Adw.ApplicationWindow):
         sidebar_header = Adw.HeaderBar()
         sidebar_header.get_style_context().add_class("nav-bar-blue")
         sidebar_box.append(sidebar_header)
+
+        # Settings button (sidebar header)
+        self.settings_button = Gtk.Button.new_from_icon_name("emblem-system-symbolic")
+        self.settings_button.set_tooltip_text("Preferences")
+        self.settings_button.connect("clicked", self._on_settings_clicked)
+        sidebar_header.pack_start(self.settings_button)
+
+        # Sync button (sidebar header)
+        self.sync_button = Gtk.Button.new_from_icon_name("emblem-synchronizing-symbolic")
+        self.sync_button.set_tooltip_text("Sync with Google Drive")
+        self.sync_button.connect("clicked", self._on_sync_clicked)
+        sidebar_header.pack_start(self.sync_button)
         sidebar_box.append(self.sidebar)
         
         sidebar_page = Adw.NavigationPage.new(sidebar_box, "Notes")
@@ -227,18 +239,6 @@ class MainWindow(Adw.ApplicationWindow):
         self.delete_button.set_sensitive(True)
         self.content_header.pack_end(self.delete_button)
 
-        # Sync button (left side of header)
-        self.sync_button = Gtk.Button.new_from_icon_name("emblem-synchronizing-symbolic")
-        self.sync_button.set_tooltip_text("Sync with Google Drive")
-        self.sync_button.connect("clicked", self._on_sync_clicked)
-        self.content_header.pack_start(self.sync_button)
-
-        # Settings button
-        self.settings_button = Gtk.Button.new_from_icon_name("preferences-system-symbolic")
-        self.settings_button.set_tooltip_text("Preferences")
-        self.settings_button.connect("clicked", self._on_settings_clicked)
-        self.content_header.pack_start(self.settings_button)
-        
         # External modification banner
         self.banner = Adw.Banner()
         self.banner.set_title("This note has been modified externally.")
