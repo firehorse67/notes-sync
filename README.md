@@ -1,82 +1,145 @@
 # Notes Sync
 
-A minimalist, native Linux Markdown notes application built with Python, GTK4, and Libadwaita. It reads and writes native `.md` files in a local directory synced with Google Drive.
-
-## Features
-
-- **Notebook Support**: Group your notes into separate folders (notebooks) with a dedicated dropdown selector.
-- **Unified Filter**: Clean dropdown tag filter in the sidebar to view notes containing specific tags.
-- **Global Tag Management**: A dedicated **Manage Tags** dialog to rename or delete tags globally across all notes in all notebooks recursively.
-- **Native Editor Panel**: Rich text editing with Markdown syntax highlighting powered by `GtkSourceView`.
-- **Autosave**: Automatic save triggers 2 seconds after typing stops, plus manual save support.
-- **Google Drive Sync Integration**: Active synchronization with Google Drive using `rclone`.
-- **System Integration**: Registered under Mint/Accessories menu as **Notes Sync** with a custom desktop launcher and application icon.
+A native Linux WYSIWYG notes application built with Python, GTK4, and Libadwaita. Notes are stored as standard Markdown files in a local directory that syncs with Google Drive via rclone.
 
 ---
 
-## Installation & Setup
+## Features
 
-### Prerequisites
+### Editor
+- **Rich text editing** — headings (H1–H3), bold, italic, bullet lists, numbered lists, inline code, and fenced code blocks, all rendered live in the editor
+- **Smart list behaviour** — Enter continues a list item with the next number or bullet; Enter on an empty list item exits the list; Backspace at the start converts back to normal text
+- **Attachments** — drag-and-drop or button to attach files (PDF, images, ZIP, etc.); displayed as a pill bar below the editor with open and delete buttons; stored in a `.attachments/` subfolder alongside the note
+- **Autosave** — saves 2 seconds after typing stops; manual save also available (Ctrl+S)
+- **Undo/redo** — full history; tag edits do not clear the undo stack
 
-Ensure you have the following system libraries installed (on Ubuntu/Debian/Mint):
+### Organisation
+- **Notebooks** — group notes into subdirectories via a dropdown selector; create and rename notebooks
+- **Tags** — YAML front matter tags with per-note editing, a filter dropdown in the sidebar, and a global tag manager (rename/delete a tag across all notes at once)
+- **Note pinning** — pin important notes to the top of the list via right-click → Pin; indicated by a pin icon on the row
+- **Full-text search** — the sidebar search entry searches note titles and full body content (mtime-cached index; no background daemon required)
 
-```bash
-sudo apt update
-sudo apt install python3 python3-pip python3-gi python3-gi-cairo gir1.2-gtk-4.0 gir1.2-adw-1 rclone fusermount3
+### Sync
+- **Google Drive sync via rclone** — notes directory is an rclone VFS mount; changes sync automatically while the mount is running
+- **Manual sync button** — header bar button triggers `rclone sync` on demand; shows syncing/done/error toast
+- **External change detection** — if a note is modified externally (e.g. by a sync), the app reloads it silently or shows a banner if you have unsaved changes
+
+### Import / Export
+- Export a single note as Markdown or JSON
+- Export a notebook or the entire project as a ZIP archive or JSON bundle
+- Import notes from Markdown or JSON; import notebooks from ZIP
+
+---
+
+## Keyboard Shortcuts
+
+| Shortcut | Action |
+|---|---|
+| Ctrl+S | Save note |
+| Ctrl+N | New note |
+| Ctrl+B | Bold |
+| Ctrl+I | Italic |
+| Ctrl+1 / 2 / 3 | Heading 1 / 2 / 3 |
+| Ctrl+8 | Bullet list |
+| Ctrl+9 | Numbered list |
+| Ctrl+` | Code block |
+| Ctrl+0 | Normal paragraph |
+
+---
+
+## Note Format
+
+Notes are plain Markdown files with an optional YAML front matter block:
+
+```markdown
+---
+tags: [work, ideas]
+pinned: true
+---
+# My Note Title
+
+Body content here...
+```
+
+Attachments are referenced as standard Markdown links at the end of the body:
+
+```markdown
+[report.pdf](.attachments/report.pdf)
 ```
 
 ---
 
-## Setting up Google Drive Sync with Rclone
+## Installation
 
-To keep your notes synced automatically, set up `rclone` with your Google Drive account.
+### System dependencies
 
-### 1. Configure the Remote
-Run the configuration utility:
+```bash
+sudo apt update
+sudo apt install python3 python3-gi python3-gi-cairo gir1.2-gtk-4.0 gir1.2-adw-1 python3-markdown rclone fuse3
+```
+
+### Clone and run
+
+```bash
+git clone https://github.com/firehorse67/notes-sync.git
+cd notes-sync
+python3 run.py
+```
+
+---
+
+## Configuration
+
+Edit `notes_app/config.py` to set your notes directory and rclone sync command:
+
+```python
+NOTES_DIR = os.path.expanduser("~/Sync/GoogleDrive/Notes/")
+
+# Adjust remote name and path to match your rclone config
+# Run `rclone listremotes` to see available remotes
+RCLONE_SYNC_CMD = ['rclone', 'sync', NOTES_DIR.rstrip('/'), 'gdrive:Notes', '--quiet']
+```
+
+---
+
+## Setting up Google Drive Sync
+
+### 1. Configure the rclone remote
+
 ```bash
 rclone config
 ```
 
-Follow the prompts:
-- Choose **`n`** (New remote).
-- Name the remote **`gdrive`** (this exact name is expected by the mount script).
-- Type **`drive`** or select the number corresponding to **Google Drive**.
-- Leave **client_id** and **client_secret** blank (press Enter).
-- Select scope: **`1`** (Full access to all files).
-- Leave advanced config at **`n`** (No).
-- Choose **`y`** for auto-config. A browser window will open; log into your Google Account and authorize Rclone.
-- Confirm and save the configuration.
+- Choose **n** (New remote)
+- Name it **`gdrive`** (or update `RCLONE_SYNC_CMD` in `config.py` to match your chosen name)
+- Type: **`drive`** (Google Drive)
+- Leave client\_id and client\_secret blank
+- Scope: **`1`** (Full access)
+- Auto-config: **y** — a browser window will open to authorise
 
-### 2. Prepare Remote Folder
-Create a folder named `Notes` in the root of your Google Drive. Rclone will sync the notes directly to this folder.
+### 2. Create the remote folder
 
-### 3. Run the Mount Script
-The project includes a mount script `mount_gdrive.sh` that safely backs up any local notes, mounts Google Drive to `~/Sync/GoogleDrive/Notes`, and merges your local notes back.
+Create a folder named `Notes` in the root of your Google Drive.
 
-Make the script executable and run it:
-```bash
-chmod +x mount_gdrive.sh
-./mount_gdrive.sh
-```
+### 3. Mount on login (optional)
 
-### 4. Setting up Automatic Launch on Login
-To mount Google Drive automatically when you log into your computer:
-1. Open the Cinnamon/Mint menu and search for **Startup Applications**.
-2. Click the **+** button at the bottom and select **Custom Command**.
-3. Fill out the fields:
-   - **Name**: Mount Google Drive Notes
-   - **Command**: `/home/michael/Linux/Notes/mount_gdrive.sh`
-   - **Startup delay**: `5` seconds (gives the network connection time to initialize).
-4. Save it.
+Use the included `mount_gdrive.sh` script to mount Google Drive at startup. Add it to your session's Startup Applications with a 5-second delay to allow the network to initialise.
 
 ---
 
-## Running the App
+## Testing sync
 
-To launch the notes application:
+The included `test_sync.sh` script simulates external sync events (new note, new notebook, external edit) to verify that the file monitor and hot-reload logic work correctly:
 
 ```bash
-python3 run.py
+./test_sync.sh add-note
+./test_sync.sh add-folder
+./test_sync.sh modify-active
+./test_sync.sh clean
 ```
 
-Or launch it via your system applications menu under **Accessories -> Notes Sync**.
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE).

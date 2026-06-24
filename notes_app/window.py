@@ -65,6 +65,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.sidebar.connect("move-note", self._on_move_note)
         self.sidebar.connect("rename-tag-global", self._on_rename_tag_global)
         self.sidebar.connect("delete-tag-global", self._on_delete_tag_global)
+        self.sidebar.connect("pin-note", self._on_pin_note)
         
         sidebar_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         sidebar_box.get_style_context().add_class("sidebar-container")
@@ -164,6 +165,12 @@ class MainWindow(Adw.ApplicationWindow):
         self.delete_button.connect("clicked", self._on_header_delete_clicked)
         self.delete_button.set_sensitive(True)
         self.content_header.pack_end(self.delete_button)
+
+        # Sync button (left side of header)
+        self.sync_button = Gtk.Button.new_from_icon_name("emblem-synchronizing-symbolic")
+        self.sync_button.set_tooltip_text("Sync with Google Drive")
+        self.sync_button.connect("clicked", self._on_sync_clicked)
+        self.content_header.pack_start(self.sync_button)
         
         # External modification banner
         self.banner = Adw.Banner()
@@ -202,6 +209,8 @@ class MainWindow(Adw.ApplicationWindow):
         self.file_manager.connect("file-loaded", self._on_file_loaded)
         self.file_manager.connect("external-change-detected", self._on_external_change_detected)
         self.file_manager.connect("save-status-changed", self._on_save_status_changed)
+        self.file_manager.connect("note-saved", self._on_note_saved)
+        self.file_manager.connect("sync-status-changed", self._on_sync_status_changed)
         
         # Populate sidebar on load
         self.sidebar.populate()
@@ -283,13 +292,18 @@ class MainWindow(Adw.ApplicationWindow):
         )
 
     def _setup_actions(self):
-        """Set up actions like Save (Ctrl+S)."""
+        """Set up actions like Save (Ctrl+S) and New Note (Ctrl+N)."""
         save_action = Gio.SimpleAction.new("save", None)
         save_action.connect("activate", self._on_save_shortcut)
         self.add_action(save_action)
-        
+
+        new_note_action = Gio.SimpleAction.new("new-note", None)
+        new_note_action.connect("activate", lambda a, p: self.sidebar._on_add_clicked(None))
+        self.add_action(new_note_action)
+
         app = self.get_application()
         app.set_accels_for_action("win.save", ["<Control>s"])
+        app.set_accels_for_action("win.new-note", ["<Control>n"])
 
     def _set_editor_controls_visible(self, visible):
         """Show or hide the header save/autosave controls."""
@@ -310,11 +324,12 @@ class MainWindow(Adw.ApplicationWindow):
     def _perform_manual_save(self):
         if self.file_manager.active_file_path and self.file_manager.dirty:
             content = self.editor.get_content()
-            if self.file_manager.save_active_file(content):
-                self._show_toast("Note saved")
-                self.banner.set_revealed(False)
-                # Re-parse tags and populate sidebar row badges
-                self.sidebar.populate()
+            def on_done(success):
+                if success:
+                    self._show_toast("Note saved")
+                    self.banner.set_revealed(False)
+                    self.sidebar.populate()
+            self.file_manager.save_active_file(content, on_complete=on_done, get_content_func=self.editor.get_content)
 
     def _show_toast(self, text):
         toast = Adw.Toast.new(text)
@@ -418,14 +433,18 @@ class MainWindow(Adw.ApplicationWindow):
         self.file_manager.active_file_mtime = 0
         self.file_manager.dirty = False
         self.banner.set_revealed(False)
+        self.editor.active_file_path = None
 
     # --- File Manager Signaled Events ---
     def _on_files_changed(self, file_manager):
         self.sidebar.populate()
 
+    def _on_note_saved(self, file_manager, path, title, mtime):
+        self.sidebar.update_note_row(path, title, mtime)
+
     def _on_file_loaded(self, file_manager, path, content):
         title = self.file_manager.get_display_title(path)
-        self.editor.set_content(content)
+        self.editor.set_content(content, path)
         self.content_page.set_title(title)
         self.stack.set_visible_child_name("editor")
         self.editor.set_editable(True)
@@ -464,6 +483,26 @@ class MainWindow(Adw.ApplicationWindow):
                 self.sidebar.list_box.select_row(row)
                 break
             row = row.get_next_sibling()
+
+    def _on_pin_note(self, sidebar, file_path, pinned):
+        if self.file_manager.pin_note(file_path, pinned):
+            title = self.file_manager.get_display_title(file_path)
+            action = "Pinned" if pinned else "Unpinned"
+            self._show_toast(f"{action} '{title}'")
+
+    def _on_sync_clicked(self, button):
+        self.file_manager.trigger_sync()
+
+    def _on_sync_status_changed(self, file_manager, status):
+        if status == 'syncing':
+            self.sync_button.set_sensitive(False)
+            self._show_toast("Syncing with Google Drive...")
+        elif status == 'done':
+            self.sync_button.set_sensitive(True)
+            self._show_toast("Sync complete")
+        elif status == 'error':
+            self.sync_button.set_sensitive(True)
+            self._show_toast("Sync failed — check rclone config")
 
     def _on_rename_tag_global(self, sidebar, old_tag, new_tag):
         if self.file_manager.rename_tag_globally(old_tag, new_tag):
