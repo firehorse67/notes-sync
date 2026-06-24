@@ -280,6 +280,11 @@ class MainWindow(Adw.ApplicationWindow):
                 border: 1px solid rgba(0, 0, 0, 0.1);
             }
 
+            /* Reset color inheritance inside popovers so buttons are readable */
+            popover label, popover button label {
+                color: #1f2937;
+            }
+
             /* Tag Pills */
             .tag-pill {
                 background-color: rgba(30, 58, 138, 0.08); /* Light blue tint */
