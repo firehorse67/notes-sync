@@ -5,7 +5,9 @@ from gi.repository import Gtk, Adw, Gio, GLib, GObject, Gdk
 from .sidebar import SidebarView
 from .editor import MarkdownEditor
 from .config import load_local_config, save_local_config
+from .ai_helper import call_gemini_api, call_deepseek_api
 import os
+import threading
 
 class SettingsDialog(Adw.PreferencesWindow):
     def __init__(self, parent):
@@ -132,6 +134,12 @@ class MainWindow(Adw.ApplicationWindow):
         self.sync_button.set_tooltip_text("Sync with Google Drive")
         self.sync_button.connect("clicked", self._on_sync_clicked)
         sidebar_header.pack_start(self.sync_button)
+
+        # AI Toggle button (sidebar header)
+        self.ai_toggle_button = Gtk.ToggleButton.new_from_icon_name("face-smile-symbolic")
+        self.ai_toggle_button.set_tooltip_text("AI Assistant")
+        self.ai_toggle_button.connect("toggled", self._on_ai_toggle_toggled)
+        sidebar_header.pack_start(self.ai_toggle_button)
         sidebar_box.append(self.sidebar)
         
         sidebar_page = Adw.NavigationPage.new(sidebar_box, "Notes")
@@ -244,10 +252,20 @@ class MainWindow(Adw.ApplicationWindow):
         self.banner.connect("button-clicked", self._on_reload_banner_clicked)
         content_box.append(self.banner)
         
+        # Horizontal container for Stack (Editor/Empty) and AI Chat Panel
+        self.main_content_area = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        
         # Stack to switch between Editor and Empty State
         self.stack = Gtk.Stack()
         self.stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
-        content_box.append(self.stack)
+        self.stack.set_hexpand(True)
+        self.main_content_area.append(self.stack)
+        
+        # Build AI Panel
+        self._build_ai_panel()
+        self.main_content_area.append(self.ai_panel)
+        
+        content_box.append(self.main_content_area)
         
         # Empty state page
         self.status_page = Adw.StatusPage()
@@ -358,6 +376,32 @@ class MainWindow(Adw.ApplicationWindow):
             }
             .dim-label {
                 opacity: 0.65;
+            }
+
+            /* AI Chat Panel styling */
+            .ai-panel {
+                border-left: 1px solid rgba(0, 0, 0, 0.1);
+                background-color: @window_bg_color;
+            }
+            .chat-bubble-user {
+                background-color: #3b82f6;
+                color: #ffffff;
+                padding: 10px 14px;
+                border-radius: 12px 12px 2px 12px;
+                margin-left: 20px;
+                box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+            }
+            .chat-bubble-user label {
+                color: #ffffff;
+            }
+            .chat-bubble-assistant {
+                background-color: @card_bg_color;
+                border: 1px solid rgba(0, 0, 0, 0.05);
+                color: @card_fg_color;
+                padding: 10px 14px;
+                border-radius: 12px 12px 12px 2px;
+                margin-right: 20px;
+                box-shadow: 0 1px 2px rgba(0,0,0,0.05);
             }
         """)
         Gtk.StyleContext.add_provider_for_display(
@@ -549,6 +593,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.save_button.set_sensitive(False)
         self.status_label.set_text("Saved")
         
+        self._update_ai_attachment_context()
         self.split_view.set_show_content(True)
 
     def _on_external_change_detected(self, file_manager, has_unsaved_changes):
@@ -766,3 +811,220 @@ class MainWindow(Adw.ApplicationWindow):
 
         dialog.connect("response", on_response)
         dialog.show()
+
+    def _build_ai_panel(self):
+        self.ai_panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self.ai_panel.get_style_context().add_class("ai-panel")
+        self.ai_panel.set_width_request(320)
+        self.ai_panel.set_visible(False)
+        
+        # 1. Header
+        header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        header.set_margin_start(12)
+        header.set_margin_end(12)
+        header.set_margin_top(8)
+        header.set_margin_bottom(8)
+        header.set_spacing(6)
+        
+        title_label = Gtk.Label(label="AI Assistant")
+        title_label.get_style_context().add_class("bold")
+        title_label.set_hexpand(True)
+        title_label.set_halign(Gtk.Align.START)
+        header.append(title_label)
+        
+        close_btn = Gtk.Button.new_from_icon_name("window-close-symbolic")
+        close_btn.set_has_frame(False)
+        close_btn.connect("clicked", lambda b: self._toggle_ai_panel(False))
+        header.append(close_btn)
+        
+        self.ai_panel.append(header)
+        
+        # Separator
+        sep = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
+        self.ai_panel.append(sep)
+        
+        # 2. Chat history scrolled window
+        self.chat_scrolled = Gtk.ScrolledWindow()
+        self.chat_scrolled.set_vexpand(True)
+        self.chat_scrolled.set_hexpand(True)
+        
+        self.chat_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        self.chat_box.set_margin_start(12)
+        self.chat_box.set_margin_end(12)
+        self.chat_box.set_margin_top(12)
+        self.chat_box.set_margin_bottom(12)
+        
+        self.chat_scrolled.set_child(self.chat_box)
+        self.ai_panel.append(self.chat_scrolled)
+        
+        # Add welcome message
+        self._add_chat_message("assistant", "Hello! I am your AI notes assistant. Ask me anything about your notes, or attach a PDF to let Gemini read it!")
+        
+        # 3. Attachment context area
+        self.attachment_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        self.attachment_box.set_margin_start(12)
+        self.attachment_box.set_margin_end(12)
+        self.attachment_box.set_margin_bottom(6)
+        self.attachment_box.set_visible(False)
+        
+        self.attachment_checkbox = Gtk.CheckButton(label="Ask Gemini about active PDF")
+        self.attachment_checkbox.set_active(True)
+        self.attachment_box.append(self.attachment_checkbox)
+        
+        self.ai_panel.append(self.attachment_box)
+        
+        # 4. Input Area
+        input_sep = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
+        self.ai_panel.append(input_sep)
+        
+        input_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        input_box.set_margin_start(12)
+        input_box.set_margin_end(12)
+        input_box.set_margin_top(10)
+        input_box.set_margin_bottom(10)
+        
+        self.chat_entry = Gtk.Entry()
+        self.chat_entry.set_placeholder_text("Ask AI assistant...")
+        self.chat_entry.set_hexpand(True)
+        self.chat_entry.connect("activate", self._on_chat_submit)
+        input_box.append(self.chat_entry)
+        
+        self.chat_send_btn = Gtk.Button.new_from_icon_name("mail-send-symbolic")
+        self.chat_send_btn.connect("clicked", self._on_chat_submit)
+        input_box.append(self.chat_send_btn)
+        
+        self.ai_panel.append(input_box)
+
+    def _toggle_ai_panel(self, visible):
+        self.ai_panel.set_visible(visible)
+        self.ai_toggle_button.set_active(visible)
+        if visible:
+            self._update_ai_attachment_context()
+            self.chat_entry.grab_focus()
+
+    def _on_ai_toggle_toggled(self, button):
+        self._toggle_ai_panel(button.get_active())
+
+    def _add_chat_message(self, sender, text):
+        bubble_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        
+        # Message bubble
+        label = Gtk.Label(label=text)
+        label.set_wrap(True)
+        label.set_xalign(0.0)
+        label.set_max_width_chars(35)
+        label.set_selectable(True)
+        
+        bubble = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        bubble.append(label)
+        
+        if sender == "user":
+            bubble_box.set_halign(Gtk.Align.END)
+            bubble.get_style_context().add_class("chat-bubble-user")
+        else:
+            bubble_box.set_halign(Gtk.Align.START)
+            bubble.get_style_context().add_class("chat-bubble-assistant")
+            
+        bubble_box.append(bubble)
+        self.chat_box.append(bubble_box)
+        
+        # Scroll to bottom
+        GLib.idle_add(self._scroll_to_bottom)
+        return bubble_box
+
+    def _scroll_to_bottom(self):
+        adj = self.chat_scrolled.get_vadjustment()
+        adj.set_value(adj.get_upper() - adj.get_page_size())
+        return False
+
+    def _update_ai_attachment_context(self):
+        has_pdf = False
+        pdf_name = ""
+        
+        if self.file_manager.active_file_path and hasattr(self.editor, "_attachments"):
+            for att in self.editor._attachments:
+                if att.get("src", "").lower().endswith(".pdf"):
+                    has_pdf = True
+                    pdf_name = os.path.basename(att["src"])
+                    break
+        
+        if has_pdf:
+            self.attachment_checkbox.set_label(f"Ask Gemini about '{pdf_name}'")
+            self.attachment_box.set_visible(True)
+        else:
+            self.attachment_box.set_visible(False)
+            self.attachment_checkbox.set_active(False)
+
+    def _on_chat_submit(self, widget):
+        prompt = self.chat_entry.get_text().strip()
+        if not prompt:
+            return
+            
+        self.chat_entry.set_text("")
+        self._add_chat_message("user", prompt)
+        
+        self.chat_entry.set_sensitive(False)
+        self.chat_send_btn.set_sensitive(False)
+        
+        thinking_bubble_box = self._add_chat_message("assistant", "Thinking...")
+        
+        use_gemini = self.attachment_checkbox.get_active()
+        pdf_path = None
+        
+        if use_gemini and self.file_manager.active_file_path and hasattr(self.editor, "_attachments"):
+            for att in self.editor._attachments:
+                if att.get("src", "").lower().endswith(".pdf"):
+                    note_dir = os.path.dirname(self.file_manager.active_file_path)
+                    pdf_path = os.path.join(note_dir, att["src"])
+                    break
+        
+        thread = threading.Thread(
+            target=self._ai_query_worker,
+            args=(prompt, use_gemini, pdf_path, thinking_bubble_box)
+        )
+        thread.daemon = True
+        thread.start()
+
+    def _ai_query_worker(self, prompt, use_gemini, pdf_path, thinking_bubble_box):
+        config = load_local_config()
+        active_content = None
+        
+        def get_note_content():
+            nonlocal active_content
+            if self.file_manager.active_file_path:
+                active_content = self.editor.get_content()
+            return False
+            
+        GLib.idle_add(get_note_content)
+        
+        import time
+        time.sleep(0.1)
+        
+        try:
+            if use_gemini:
+                api_key = config.get("gemini_api_key", "").strip()
+                if not api_key:
+                    raise ValueError("Gemini API key is not configured in Settings.")
+                response_text = call_gemini_api(api_key, prompt, pdf_path=pdf_path)
+            else:
+                api_key = config.get("deepseek_api_key", "").strip()
+                if not api_key:
+                    raise ValueError("DeepSeek API key is not configured in Settings.")
+                response_text = call_deepseek_api(api_key, prompt, note_content=active_content)
+        except Exception as e:
+            response_text = f"Error: {e}"
+            
+        def update_ui():
+            try:
+                bubble_box = thinking_bubble_box.get_first_child()
+                label = bubble_box.get_first_child()
+                label.set_text(response_text)
+            except Exception as e:
+                print(f"Failed to update chat UI: {e}")
+                
+            self.chat_entry.set_sensitive(True)
+            self.chat_send_btn.set_sensitive(True)
+            self._scroll_to_bottom()
+            return False
+            
+        GLib.idle_add(update_ui)
