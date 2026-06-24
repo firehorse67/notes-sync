@@ -2,9 +2,17 @@ import base64
 import os
 import requests
 
-def call_gemini_api(api_key, prompt, pdf_path=None):
+def call_gemini_api(api_key, prompt, pdf_path=None, workspace_info=None):
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
     headers = {"Content-Type": "application/json"}
+    
+    system_instruction = (
+        "You are a helpful notes assistant. You assist the user with editing, writing, and searching notes.\n"
+        "You MUST adopt Australian spelling, dates, and number formats in all your responses. Examples:\n"
+        "- Use Australian spelling (e.g. colour, organise, realise, centre, travelled).\n"
+        "- Use Australian date format: Day Month Year (e.g. 12 July 2026), without commas.\n"
+        "- Use Australian/UK number format: No comma separators for thousands (e.g. write 2388 instead of 2,388, write 10000 instead of 10,000).\n"
+    )
     
     parts = []
     if pdf_path and os.path.exists(pdf_path):
@@ -20,11 +28,18 @@ def call_gemini_api(api_key, prompt, pdf_path=None):
         except Exception as e:
             raise ValueError(f"Failed to read/encode PDF file: {e}")
     
-    parts.append({"text": prompt})
+    gemini_prompt = prompt
+    if workspace_info:
+        gemini_prompt = f"Workspace Note Information:\n{workspace_info}\n\nUser Question:\n{prompt}"
+        
+    parts.append({"text": gemini_prompt})
     payload = {
         "contents": [{
             "parts": parts
-        }]
+        }],
+        "systemInstruction": {
+            "parts": [{"text": system_instruction}]
+        }
     }
     
     response = requests.post(url, json=payload, headers=headers, timeout=45)
