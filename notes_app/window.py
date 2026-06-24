@@ -91,6 +91,12 @@ class MainWindow(Adw.ApplicationWindow):
         self.status_label.get_style_context().add_class("dim-label")
         self.status_label.set_margin_end(12)
         self.content_header.pack_end(self.status_label)
+
+        # 1b. Word count label
+        self.word_count_label = Gtk.Label(label="")
+        self.word_count_label.get_style_context().add_class("dim-label")
+        self.word_count_label.set_margin_end(12)
+        self.content_header.pack_end(self.word_count_label)
         
         # 2. Auto-save toggle switch with label
         autosave_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
@@ -313,6 +319,7 @@ class MainWindow(Adw.ApplicationWindow):
     def _set_editor_controls_visible(self, visible):
         """Show or hide the header save/autosave controls."""
         self.status_label.set_visible(visible)
+        self.word_count_label.set_visible(visible)
         self.autosave_switch.get_parent().set_visible(visible)  # Box container
         self.save_button.set_visible(visible)
         self.tags_button.set_visible(visible)
@@ -405,8 +412,25 @@ class MainWindow(Adw.ApplicationWindow):
             self.sidebar.populate()
             self._select_row_by_path(new_path)
 
+    def _update_word_count(self):
+        import re
+        content = self.editor.get_content()
+        # Strip fenced code blocks, then markdown tokens, then count words
+        text = re.sub(r'```[\s\S]*?```', ' ', content)
+        text = re.sub(r'`[^`]+`', ' ', text)
+        text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
+        text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
+        text = re.sub(r'\*(.+?)\*', r'\1', text)
+        text = re.sub(r'~~(.+?)~~', r'\1', text)
+        text = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', text)
+        text = re.sub(r'^[-*+>]\s+', '', text, flags=re.MULTILINE)
+        text = re.sub(r'^\d+[.)]\s+', '', text, flags=re.MULTILINE)
+        words = len(text.split())
+        self.word_count_label.set_label(f"{words:,} words")
+
     def _on_editor_changed(self, editor):
         self.file_manager.handle_content_changed(self.editor.get_content)
+        self._update_word_count()
 
     def _on_reload_banner_clicked(self, banner):
         self.banner.set_revealed(False)
@@ -455,7 +479,8 @@ class MainWindow(Adw.ApplicationWindow):
         self.editor.set_editable(True)
         self.banner.set_revealed(False)
         self._set_editor_controls_visible(True)
-        
+        self._update_word_count()
+
         # Reset Save button state (fully saved on load)
         self.save_button.set_sensitive(False)
         self.status_label.set_text("Saved")
