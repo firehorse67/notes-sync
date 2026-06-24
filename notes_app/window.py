@@ -853,7 +853,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.ai_panel.append(self.chat_scrolled)
         
         # Add welcome message
-        self._add_chat_message("assistant", "Hello, I am your AI notes assistant. Ask me anything about your notes.")
+        GLib.idle_add(lambda: self._add_chat_message("assistant", "Hello, I am your AI notes assistant. Ask me anything about your notes."))
         
         # 3. Attachment context area
         self.attachment_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
@@ -907,7 +907,9 @@ class MainWindow(Adw.ApplicationWindow):
         label = Gtk.Label(label=text)
         label.set_wrap(True)
         label.set_xalign(0.0)
-        label.set_max_width_chars(35)
+        label.set_width_chars(25)
+        label.set_max_width_chars(30)
+        label.set_lines(-1)
         label.set_selectable(False)
         label.set_margin_start(14)
         label.set_margin_end(14)
