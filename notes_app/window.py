@@ -32,15 +32,13 @@ class SettingsDialog(Adw.PreferencesWindow):
         group.add(self.provider_row)
         
         # Gemini API Key Row
-        self.gemini_key_row = Adw.EntryRow(title="Gemini API Key")
+        self.gemini_key_row = Adw.PasswordEntryRow(title="Gemini API Key")
         self.gemini_key_row.set_text(self.config.get("gemini_api_key", ""))
-        self.gemini_key_row.set_visibility(False)
         group.add(self.gemini_key_row)
         
         # DeepSeek API Key Row
-        self.deepseek_key_row = Adw.EntryRow(title="DeepSeek API Key")
+        self.deepseek_key_row = Adw.PasswordEntryRow(title="DeepSeek API Key")
         self.deepseek_key_row.set_text(self.config.get("deepseek_api_key", ""))
-        self.deepseek_key_row.set_visibility(False)
         group.add(self.deepseek_key_row)
         
         self.connect("close-request", self._on_close_request)
