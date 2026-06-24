@@ -1,6 +1,7 @@
 import gi
 gi.require_version('Gtk', '4.0')
-from gi.repository import Gtk, Pango, GObject, Gdk, GLib, Gio
+gi.require_version('GdkPixbuf', '2.0')
+from gi.repository import Gtk, Pango, GObject, Gdk, GLib, Gio, GdkPixbuf
 import markdown
 import os
 import re
@@ -897,6 +898,28 @@ class MarkdownEditor(Gtk.Box):
             self._remove_attachment(relative_src, full_path, pill)
         del_btn.connect("clicked", on_delete)
         pill.append(del_btn)
+
+        # Image hover preview
+        if ext in ('png', 'jpg', 'jpeg', 'webp') and os.path.exists(full_path):
+            try:
+                pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(full_path, 256, 256, True)
+                texture = Gdk.Texture.new_for_pixbuf(pixbuf)
+                picture = Gtk.Picture.new_for_paintable(texture)
+                picture.set_content_fit(Gtk.ContentFit.CONTAIN)
+                picture.set_size_request(256, 256)
+
+                preview_popover = Gtk.Popover()
+                preview_popover.set_parent(pill)
+                preview_popover.set_autohide(False)
+                preview_popover.set_position(Gtk.PositionType.TOP)
+                preview_popover.set_child(picture)
+
+                motion = Gtk.EventControllerMotion()
+                motion.connect("enter", lambda ctrl, x, y: preview_popover.popup())
+                motion.connect("leave", lambda ctrl: preview_popover.popdown())
+                pill.add_controller(motion)
+            except Exception:
+                pass  # skip preview if image can't be loaded
 
         self.attachments_flow.append(pill)
 
