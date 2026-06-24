@@ -121,6 +121,42 @@ class MainWindow(Adw.ApplicationWindow):
         self.tags_button.set_sensitive(True)
         self.content_header.pack_end(self.tags_button)
         
+        # 4b. Import/Export Button
+        self.transfer_button = Gtk.MenuButton()
+        self.transfer_button.set_icon_name("document-send-symbolic")
+        self.transfer_button.set_tooltip_text("Import/Export Note")
+        
+        transfer_popover = Gtk.Popover()
+        transfer_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        transfer_box.set_margin_start(6)
+        transfer_box.set_margin_end(6)
+        transfer_box.set_margin_top(6)
+        transfer_box.set_margin_bottom(6)
+        
+        exp_md_btn = Gtk.Button(label="Export as Markdown (.md)...")
+        exp_md_btn.set_has_frame(False)
+        exp_md_btn.connect("clicked", self._on_export_markdown_clicked, transfer_popover)
+        transfer_box.append(exp_md_btn)
+        
+        exp_json_btn = Gtk.Button(label="Export as JSON (.json)...")
+        exp_json_btn.set_has_frame(False)
+        exp_json_btn.connect("clicked", self._on_export_json_clicked, transfer_popover)
+        transfer_box.append(exp_json_btn)
+        
+        imp_md_btn = Gtk.Button(label="Import from Markdown (.md)...")
+        imp_md_btn.set_has_frame(False)
+        imp_md_btn.connect("clicked", self._on_import_markdown_clicked, transfer_popover)
+        transfer_box.append(imp_md_btn)
+        
+        imp_json_btn = Gtk.Button(label="Import from JSON (.json)...")
+        imp_json_btn.set_has_frame(False)
+        imp_json_btn.connect("clicked", self._on_import_json_clicked, transfer_popover)
+        transfer_box.append(imp_json_btn)
+        
+        transfer_popover.set_child(transfer_box)
+        self.transfer_button.set_popover(transfer_popover)
+        self.content_header.pack_end(self.transfer_button)
+        
         # 5. Delete Button
         self.delete_button = Gtk.Button.new_from_icon_name("user-trash-symbolic")
         self.delete_button.set_tooltip_text("Delete Note")
@@ -261,6 +297,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.autosave_switch.get_parent().set_visible(visible)  # Box container
         self.save_button.set_visible(visible)
         self.tags_button.set_visible(visible)
+        self.transfer_button.set_visible(visible)
         self.delete_button.set_visible(visible)
 
     # --- Action Handlers ---
@@ -437,3 +474,126 @@ class MainWindow(Adw.ApplicationWindow):
         if self.file_manager.delete_tag_globally(tag):
             self._show_toast(f"Deleted tag '{tag}' globally")
             self.sidebar.populate()
+
+    # --- Note Import / Export Handlers ---
+    def _on_export_markdown_clicked(self, btn, popover):
+        popover.popdown()
+        if not self.file_manager.active_file_path:
+            return
+            
+        dialog = Gtk.FileChooserNative(
+            title="Export Note to Markdown",
+            transient_for=self,
+            action=Gtk.FileChooserAction.SAVE,
+            accept_label="Export",
+            cancel_label="Cancel"
+        )
+        title = self.file_manager.get_display_title(self.file_manager.active_file_path)
+        dialog.set_current_name(f"{title}.md")
+        
+        filter_md = Gtk.FileFilter()
+        filter_md.set_name("Markdown files (*.md)")
+        filter_md.add_pattern("*.md")
+        dialog.add_filter(filter_md)
+        
+        def on_response(dialog, response_id):
+            if response_id == Gtk.ResponseType.ACCEPT:
+                dest = dialog.get_file().get_path()
+                if self.file_manager.export_note_to_markdown(self.file_manager.active_file_path, dest):
+                    self._show_toast("Note exported successfully")
+                else:
+                    self._show_toast("Failed to export note")
+            dialog.destroy()
+            
+        dialog.connect("response", on_response)
+        dialog.show()
+
+    def _on_export_json_clicked(self, btn, popover):
+        popover.popdown()
+        if not self.file_manager.active_file_path:
+            return
+            
+        dialog = Gtk.FileChooserNative(
+            title="Export Note to JSON",
+            transient_for=self,
+            action=Gtk.FileChooserAction.SAVE,
+            accept_label="Export",
+            cancel_label="Cancel"
+        )
+        title = self.file_manager.get_display_title(self.file_manager.active_file_path)
+        dialog.set_current_name(f"{title}.json")
+        
+        filter_json = Gtk.FileFilter()
+        filter_json.set_name("JSON files (*.json)")
+        filter_json.add_pattern("*.json")
+        dialog.add_filter(filter_json)
+        
+        def on_response(dialog, response_id):
+            if response_id == Gtk.ResponseType.ACCEPT:
+                dest = dialog.get_file().get_path()
+                if self.file_manager.export_note_to_json(self.file_manager.active_file_path, dest):
+                    self._show_toast("Note exported successfully")
+                else:
+                    self._show_toast("Failed to export note")
+            dialog.destroy()
+            
+        dialog.connect("response", on_response)
+        dialog.show()
+
+    def _on_import_markdown_clicked(self, btn, popover):
+        popover.popdown()
+        dialog = Gtk.FileChooserNative(
+            title="Import Note from Markdown",
+            transient_for=self,
+            action=Gtk.FileChooserAction.OPEN,
+            accept_label="Import",
+            cancel_label="Cancel"
+        )
+        
+        filter_md = Gtk.FileFilter()
+        filter_md.set_name("Markdown files (*.md)")
+        filter_md.add_pattern("*.md")
+        dialog.add_filter(filter_md)
+        
+        def on_response(dialog, response_id):
+            if response_id == Gtk.ResponseType.ACCEPT:
+                src = dialog.get_file().get_path()
+                target_nb = self.file_manager.active_notebook
+                if self.file_manager.import_note_from_markdown(src, target_nb):
+                    self._show_toast("Note imported successfully")
+                    self.sidebar.populate()
+                else:
+                    self._show_toast("Failed to import note")
+            dialog.destroy()
+            
+        dialog.connect("response", on_response)
+        dialog.show()
+
+    def _on_import_json_clicked(self, btn, popover):
+        popover.popdown()
+        dialog = Gtk.FileChooserNative(
+            title="Import Note from JSON",
+            transient_for=self,
+            action=Gtk.FileChooserAction.OPEN,
+            accept_label="Import",
+            cancel_label="Cancel"
+        )
+        
+        filter_json = Gtk.FileFilter()
+        filter_json.set_name("JSON files (*.json)")
+        filter_json.add_pattern("*.json")
+        dialog.add_filter(filter_json)
+        
+        def on_response(dialog, response_id):
+            if response_id == Gtk.ResponseType.ACCEPT:
+                src = dialog.get_file().get_path()
+                target_nb = self.file_manager.active_notebook
+                if self.file_manager.import_note_from_json(src, target_nb):
+                    self._show_toast("Note imported successfully")
+                    self.sidebar.populate()
+                else:
+                    self._show_toast("Failed to import note")
+            dialog.destroy()
+            
+        dialog.connect("response", on_response)
+        dialog.show()

@@ -332,6 +332,61 @@ class SidebarView(Gtk.Box):
         self.rename_notebook_btn.set_sensitive(False)
         self.notebook_bar.append(self.rename_notebook_btn)
         
+        # Workspace/Notebook Actions Menu Button
+        self.workspace_actions_btn = Gtk.MenuButton()
+        self.workspace_actions_btn.set_icon_name("open-menu-symbolic")
+        self.workspace_actions_btn.set_tooltip_text("Workspace / Notebook Actions")
+        
+        ws_popover = Gtk.Popover()
+        ws_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        ws_box.set_margin_start(6)
+        ws_box.set_margin_end(6)
+        ws_box.set_margin_top(6)
+        ws_box.set_margin_bottom(6)
+        
+        # Notebook Actions
+        self.exp_nb_zip_btn = Gtk.Button(label="Export Active Notebook (ZIP)...")
+        self.exp_nb_zip_btn.set_has_frame(False)
+        self.exp_nb_zip_btn.connect("clicked", self._on_export_notebook_zip_clicked, ws_popover)
+        self.exp_nb_zip_btn.set_sensitive(False) # Default when All Notes is selected
+        ws_box.append(self.exp_nb_zip_btn)
+        
+        self.exp_nb_json_btn = Gtk.Button(label="Export Active Notebook (JSON)...")
+        self.exp_nb_json_btn.set_has_frame(False)
+        self.exp_nb_json_btn.connect("clicked", self._on_export_notebook_json_clicked, ws_popover)
+        self.exp_nb_json_btn.set_sensitive(False)
+        ws_box.append(self.exp_nb_json_btn)
+        
+        ws_box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+        
+        # Project Actions
+        exp_proj_zip_btn = Gtk.Button(label="Export Entire Project (ZIP)...")
+        exp_proj_zip_btn.set_has_frame(False)
+        exp_proj_zip_btn.connect("clicked", self._on_export_project_zip_clicked, ws_popover)
+        ws_box.append(exp_proj_zip_btn)
+        
+        exp_proj_json_btn = Gtk.Button(label="Export Entire Project (JSON)...")
+        exp_proj_json_btn.set_has_frame(False)
+        exp_proj_json_btn.connect("clicked", self._on_export_project_json_clicked, ws_popover)
+        ws_box.append(exp_proj_json_btn)
+        
+        ws_box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+        
+        # Import Actions
+        imp_nb_zip_btn = Gtk.Button(label="Import Notebook from ZIP...")
+        imp_nb_zip_btn.set_has_frame(False)
+        imp_nb_zip_btn.connect("clicked", self._on_import_notebook_zip_clicked, ws_popover)
+        ws_box.append(imp_nb_zip_btn)
+        
+        imp_proj_json_btn = Gtk.Button(label="Import Project from JSON...")
+        imp_proj_json_btn.set_has_frame(False)
+        imp_proj_json_btn.connect("clicked", self._on_import_project_json_clicked, ws_popover)
+        ws_box.append(imp_proj_json_btn)
+        
+        ws_popover.set_child(ws_box)
+        self.workspace_actions_btn.set_popover(ws_popover)
+        self.notebook_bar.append(self.workspace_actions_btn)
+        
         self.append(self.notebook_bar)
         
         # --- Search / Add Bar ---
@@ -508,10 +563,14 @@ class SidebarView(Gtk.Box):
         if name == "All Notes":
             self.file_manager.set_active_notebook(None)
             self.rename_notebook_btn.set_sensitive(False)
+            self.exp_nb_zip_btn.set_sensitive(False)
+            self.exp_nb_json_btn.set_sensitive(False)
             self.emit("notebook-changed", "")
         else:
             self.file_manager.set_active_notebook(name)
             self.rename_notebook_btn.set_sensitive(True)
+            self.exp_nb_zip_btn.set_sensitive(True)
+            self.exp_nb_json_btn.set_sensitive(True)
             self.emit("notebook-changed", name)
             
         self.active_tag = None
@@ -731,5 +790,209 @@ class SidebarView(Gtk.Box):
             
         dialog.connect("response", on_response)
         dialog.show()
+
+    # --- Workspace & Notebook Import / Export Handlers ---
+    def _on_export_notebook_zip_clicked(self, btn, popover):
+        popover.popdown()
+        nb = self.file_manager.active_notebook
+        if not nb:
+            return
+            
+        dialog = Gtk.FileChooserNative(
+            title="Export Notebook to ZIP",
+            transient_for=self.get_root(),
+            action=Gtk.FileChooserAction.SAVE,
+            accept_label="Export",
+            cancel_label="Cancel"
+        )
+        dialog.set_current_name(f"{nb}_export.zip")
+        
+        filter_zip = Gtk.FileFilter()
+        filter_zip.set_name("ZIP archives (*.zip)")
+        filter_zip.add_pattern("*.zip")
+        dialog.add_filter(filter_zip)
+        
+        def on_response(dialog, response_id):
+            if response_id == Gtk.ResponseType.ACCEPT:
+                dest = dialog.get_file().get_path()
+                if self.file_manager.export_notebook_to_zip(nb, dest):
+                    win = self.get_root()
+                    if win and hasattr(win, '_show_toast'):
+                        win._show_toast("Notebook exported to ZIP successfully")
+                else:
+                    win = self.get_root()
+                    if win and hasattr(win, '_show_toast'):
+                        win._show_toast("Failed to export notebook")
+            dialog.destroy()
+            
+        dialog.connect("response", on_response)
+        dialog.show()
+
+    def _on_export_notebook_json_clicked(self, btn, popover):
+        popover.popdown()
+        nb = self.file_manager.active_notebook
+        if not nb:
+            return
+            
+        dialog = Gtk.FileChooserNative(
+            title="Export Notebook to JSON",
+            transient_for=self.get_root(),
+            action=Gtk.FileChooserAction.SAVE,
+            accept_label="Export",
+            cancel_label="Cancel"
+        )
+        dialog.set_current_name(f"{nb}_export.json")
+        
+        filter_json = Gtk.FileFilter()
+        filter_json.set_name("JSON files (*.json)")
+        filter_json.add_pattern("*.json")
+        dialog.add_filter(filter_json)
+        
+        def on_response(dialog, response_id):
+            if response_id == Gtk.ResponseType.ACCEPT:
+                dest = dialog.get_file().get_path()
+                if self.file_manager.export_notebook_to_json(nb, dest):
+                    win = self.get_root()
+                    if win and hasattr(win, '_show_toast'):
+                        win._show_toast("Notebook exported to JSON successfully")
+                else:
+                    win = self.get_root()
+                    if win and hasattr(win, '_show_toast'):
+                        win._show_toast("Failed to export notebook")
+            dialog.destroy()
+            
+        dialog.connect("response", on_response)
+        dialog.show()
+
+    def _on_export_project_zip_clicked(self, btn, popover):
+        popover.popdown()
+        dialog = Gtk.FileChooserNative(
+            title="Export Entire Project to ZIP",
+            transient_for=self.get_root(),
+            action=Gtk.FileChooserAction.SAVE,
+            accept_label="Export",
+            cancel_label="Cancel"
+        )
+        dialog.set_current_name("notes_project_backup.zip")
+        
+        filter_zip = Gtk.FileFilter()
+        filter_zip.set_name("ZIP archives (*.zip)")
+        filter_zip.add_pattern("*.zip")
+        dialog.add_filter(filter_zip)
+        
+        def on_response(dialog, response_id):
+            if response_id == Gtk.ResponseType.ACCEPT:
+                dest = dialog.get_file().get_path()
+                if self.file_manager.export_project_to_zip(dest):
+                    win = self.get_root()
+                    if win and hasattr(win, '_show_toast'):
+                        win._show_toast("Project exported to ZIP successfully")
+                else:
+                    win = self.get_root()
+                    if win and hasattr(win, '_show_toast'):
+                        win._show_toast("Failed to export project")
+            dialog.destroy()
+            
+        dialog.connect("response", on_response)
+        dialog.show()
+
+    def _on_export_project_json_clicked(self, btn, popover):
+        popover.popdown()
+        dialog = Gtk.FileChooserNative(
+            title="Export Entire Project to JSON",
+            transient_for=self.get_root(),
+            action=Gtk.FileChooserAction.SAVE,
+            accept_label="Export",
+            cancel_label="Cancel"
+        )
+        dialog.set_current_name("notes_project_backup.json")
+        
+        filter_json = Gtk.FileFilter()
+        filter_json.set_name("JSON files (*.json)")
+        filter_json.add_pattern("*.json")
+        dialog.add_filter(filter_json)
+        
+        def on_response(dialog, response_id):
+            if response_id == Gtk.ResponseType.ACCEPT:
+                dest = dialog.get_file().get_path()
+                if self.file_manager.export_project_to_json(dest):
+                    win = self.get_root()
+                    if win and hasattr(win, '_show_toast'):
+                        win._show_toast("Project exported to JSON successfully")
+                else:
+                    win = self.get_root()
+                    if win and hasattr(win, '_show_toast'):
+                        win._show_toast("Failed to export project")
+            dialog.destroy()
+            
+        dialog.connect("response", on_response)
+        dialog.show()
+
+    def _on_import_notebook_zip_clicked(self, btn, popover):
+        popover.popdown()
+        dialog = Gtk.FileChooserNative(
+            title="Import Notebook from ZIP",
+            transient_for=self.get_root(),
+            action=Gtk.FileChooserAction.OPEN,
+            accept_label="Import",
+            cancel_label="Cancel"
+        )
+        
+        filter_zip = Gtk.FileFilter()
+        filter_zip.set_name("ZIP archives (*.zip)")
+        filter_zip.add_pattern("*.zip")
+        dialog.add_filter(filter_zip)
+        
+        def on_response(dialog, response_id):
+            if response_id == Gtk.ResponseType.ACCEPT:
+                src = dialog.get_file().get_path()
+                if self.file_manager.import_notebook_from_zip(src):
+                    win = self.get_root()
+                    if win and hasattr(win, '_show_toast'):
+                        win._show_toast("Notebook imported successfully")
+                    self.update_notebooks_dropdown()
+                    self.populate()
+                else:
+                    win = self.get_root()
+                    if win and hasattr(win, '_show_toast'):
+                        win._show_toast("Failed to import notebook")
+            dialog.destroy()
+            
+        dialog.connect("response", on_response)
+        dialog.show()
+
+    def _on_import_project_json_clicked(self, btn, popover):
+        popover.popdown()
+        dialog = Gtk.FileChooserNative(
+            title="Import Project from JSON",
+            transient_for=self.get_root(),
+            action=Gtk.FileChooserAction.OPEN,
+            accept_label="Import",
+            cancel_label="Cancel"
+        )
+        
+        filter_json = Gtk.FileFilter()
+        filter_json.set_name("JSON files (*.json)")
+        filter_json.add_pattern("*.json")
+        dialog.add_filter(filter_json)
+        
+        def on_response(dialog, response_id):
+            if response_id == Gtk.ResponseType.ACCEPT:
+                src = dialog.get_file().get_path()
+                if self.file_manager.import_project_from_json(src):
+                    win = self.get_root()
+                    if win and hasattr(win, '_show_toast'):
+                        win._show_toast("Project imported successfully")
+                    self.update_notebooks_dropdown()
+                    self.populate()
+                else:
+                    win = self.get_root()
+                    if win and hasattr(win, '_show_toast'):
+                        win._show_toast("Failed to import project")
+            dialog.destroy()
+            
+        dialog.connect("response", on_response)
+        dialog.show()
+
 
 

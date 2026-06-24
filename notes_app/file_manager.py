@@ -1,4 +1,8 @@
 import os
+import json
+import shutil
+import zipfile
+import tempfile
 from gi.repository import GObject, Gio, GLib
 from .config import ensure_notes_dir
 
@@ -628,3 +632,293 @@ def hello_world():
                 except OSError:
                     pass
         return modified_any
+
+    # --- Import / Export Core Methods ---
+    def get_note_as_dict(self, file_path):
+        """Read a note and return its content and tags as a dictionary."""
+        try:
+            if not os.path.exists(file_path):
+                return None
+                
+            with open(file_path, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+                
+            content_start_line = 0
+            if len(lines) > 0 and lines[0].strip() == "---":
+                for i in range(1, len(lines)):
+                    if lines[i].strip() == "---":
+                        content_start_line = i + 1
+                        break
+                        
+            content = "".join(lines[content_start_line:])
+            tags = self.get_tags_for_file(file_path)
+            title = self.get_display_title(file_path)
+            # Relative path to keep structure
+            rel_path = os.path.relpath(file_path, self.notes_dir)
+            return {
+                "title": title,
+                "tags": tags,
+                "content": content,
+                "relative_path": rel_path
+            }
+        except Exception as e:
+            print(f"Error reading note as dict {file_path}: {e}")
+            return None
+
+
+    def export_note_to_markdown(self, note_path, dest_path):
+        """Copy the raw markdown file to a destination path."""
+        try:
+            shutil.copy2(note_path, dest_path)
+            return True
+        except Exception as e:
+            print(f"Error exporting note to markdown: {e}")
+            return False
+
+    def export_note_to_json(self, note_path, dest_path):
+        """Serialize a note's metadata and content to a JSON file."""
+        try:
+            data = self.get_note_as_dict(note_path)
+            if data:
+                with open(dest_path, 'w', encoding='utf-8') as f:
+                    json.dump(data, f, indent=4, ensure_ascii=False)
+                return True
+        except Exception as e:
+            print(f"Error exporting note to json: {e}")
+        return False
+
+    def import_note_from_markdown(self, src_path, target_notebook=None):
+        """Import an external markdown file into the notes directory/notebook."""
+        try:
+            # Determine filename
+            basename = os.path.basename(src_path)
+            name, _ = os.path.splitext(basename)
+            
+            # Destination path
+            target_dir = self.notes_dir if not target_notebook else os.path.join(self.notes_dir, target_notebook)
+            os.makedirs(target_dir, exist_ok=True)
+            
+            dest_path = os.path.join(target_dir, basename)
+            # Avoid overwriting; append number if exists
+            counter = 1
+            while os.path.exists(dest_path):
+                dest_path = os.path.join(target_dir, f"{name}_{counter}.md")
+                counter += 1
+                
+            shutil.copy2(src_path, dest_path)
+            self.emit('files-changed')
+            return True
+        except Exception as e:
+            print(f"Error importing markdown note: {e}")
+            return False
+
+    def import_note_from_json(self, src_path, target_notebook=None):
+        """Import a note from a JSON file."""
+        try:
+            with open(src_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            
+            title = data.get("title", "Imported Note")
+            tags = data.get("tags", [])
+            content = data.get("content", "")
+            
+            target_dir = self.notes_dir if not target_notebook else os.path.join(self.notes_dir, target_notebook)
+            os.makedirs(target_dir, exist_ok=True)
+            
+            # Find unique file path
+            safe_title = "".join(c for c in title if c.isalnum() or c in (' ', '_', '-')).strip()
+            if not safe_title:
+                safe_title = "Imported Note"
+            dest_path = os.path.join(target_dir, f"{safe_title}.md")
+            counter = 1
+            while os.path.exists(dest_path):
+                dest_path = os.path.join(target_dir, f"{safe_title}_{counter}.md")
+                counter += 1
+                
+            # Write note markdown file
+            with open(dest_path, 'w', encoding='utf-8') as f:
+                # Write front matter if tags present
+                if tags:
+                    f.write("---\n")
+                    f.write(f"tags: [{', '.join(tags)}]\n")
+                    f.write("---\n")
+                f.write(content)
+                
+            self.emit('files-changed')
+            return True
+        except Exception as e:
+            print(f"Error importing json note: {e}")
+            return False
+
+    def export_notebook_to_zip(self, notebook_name, dest_path):
+        """Export a single notebook directory as a ZIP archive of markdown files."""
+        try:
+            notebook_dir = self.notes_dir if not notebook_name else os.path.join(self.notes_dir, notebook_name)
+            if not os.path.exists(notebook_dir):
+                return False
+                
+            with zipfile.ZipFile(dest_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                for file in os.listdir(notebook_dir):
+                    if file.endswith('.md'):
+                        full_path = os.path.join(notebook_dir, file)
+                        zipf.write(full_path, file)
+            return True
+        except Exception as e:
+            print(f"Error exporting notebook to zip: {e}")
+            return False
+
+    def export_notebook_to_json(self, notebook_name, dest_path):
+        """Export all notes in a single notebook to a single JSON archive."""
+        try:
+            data = self.get_notebook_as_dict(notebook_name)
+            with open(dest_path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=4, ensure_ascii=False)
+            return True
+        except Exception as e:
+            print(f"Error exporting notebook to json: {e}")
+            return False
+
+    def get_notebook_as_dict(self, notebook_name):
+        notebook_dir = self.notes_dir if not notebook_name else os.path.join(self.notes_dir, notebook_name)
+        notes = []
+        if os.path.exists(notebook_dir):
+            for file in os.listdir(notebook_dir):
+                if file.endswith('.md'):
+                    full_path = os.path.join(notebook_dir, file)
+                    note_data = self.get_note_as_dict(full_path)
+                    if note_data:
+                        notes.append(note_data)
+        return {
+            "notebook": notebook_name or "Root",
+            "notes": notes
+        }
+
+    def export_project_to_zip(self, dest_path):
+        """Export all notebooks and root notes as a nested ZIP of markdown files."""
+        try:
+            with zipfile.ZipFile(dest_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                for root, dirs, files in os.walk(self.notes_dir):
+                    # Skip hidden directories like .git
+                    dirs[:] = [d for d in dirs if not d.startswith('.')]
+                    for file in files:
+                        if file.endswith('.md'):
+                            full_path = os.path.join(root, file)
+                            rel_path = os.path.relpath(full_path, self.notes_dir)
+                            zipf.write(full_path, rel_path)
+            return True
+        except Exception as e:
+            print(f"Error exporting project to zip: {e}")
+            return False
+
+    def export_project_to_json(self, dest_path):
+        """Export the entire workspace to a single nested JSON backup file."""
+        try:
+            project_data = {
+                "version": "1.0",
+                "root_notes": [],
+                "notebooks": []
+            }
+            # Root notes
+            for file in os.listdir(self.notes_dir):
+                full_path = os.path.join(self.notes_dir, file)
+                if os.path.isfile(full_path) and file.endswith('.md'):
+                    note_data = self.get_note_as_dict(full_path)
+                    if note_data:
+                        project_data["root_notes"].append(note_data)
+                        
+            # Notebook subdirectories
+            for notebook in self.get_notebooks():
+                notebook_data = self.get_notebook_as_dict(notebook)
+                project_data["notebooks"].append(notebook_data)
+                
+            with open(dest_path, 'w', encoding='utf-8') as f:
+                json.dump(project_data, f, indent=4, ensure_ascii=False)
+            return True
+        except Exception as e:
+            print(f"Error exporting project to json: {e}")
+            return False
+
+    def import_notebook_from_zip(self, src_path):
+        """Extract a ZIP archive of markdown files and merge into active notebook or workspace."""
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                with zipfile.ZipFile(src_path, 'r') as zipf:
+                    zipf.extractall(tmpdir)
+                
+                # Walk extracted files and import them
+                imported_any = False
+                for root, dirs, files in os.walk(tmpdir):
+                    for file in files:
+                        if file.endswith('.md'):
+                            # Figure out relative notebook path
+                            rel_dir = os.path.relpath(root, tmpdir)
+                            notebook_target = None if rel_dir == '.' else rel_dir
+                            
+                            src_file = os.path.join(root, file)
+                            if self.import_note_from_markdown(src_file, notebook_target):
+                                imported_any = True
+                
+                if imported_any:
+                    self.emit('notebooks-changed')
+                    self.emit('files-changed')
+                return imported_any
+        except Exception as e:
+            print(f"Error importing from zip: {e}")
+            return False
+
+    def import_project_from_json(self, src_path):
+        """Restore all notebooks and notes from a single JSON project backup."""
+        try:
+            with open(src_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            
+            imported_any = False
+            
+            # Helper to write a note dict
+            def import_dict_note(note_data, notebook_name):
+                title = note_data.get("title", "Imported Note")
+                tags = note_data.get("tags", [])
+                content = note_data.get("content", "")
+                
+                target_dir = self.notes_dir if not notebook_name else os.path.join(self.notes_dir, notebook_name)
+                os.makedirs(target_dir, exist_ok=True)
+                
+                safe_title = "".join(c for c in title if c.isalnum() or c in (' ', '_', '-')).strip()
+                if not safe_title:
+                    safe_title = "Imported Note"
+                dest_path = os.path.join(target_dir, f"{safe_title}.md")
+                counter = 1
+                while os.path.exists(dest_path):
+                    dest_path = os.path.join(target_dir, f"{safe_title}_{counter}.md")
+                    counter += 1
+                
+                with open(dest_path, 'w', encoding='utf-8') as nf:
+                    if tags:
+                        nf.write("---\n")
+                        nf.write(f"tags: [{', '.join(tags)}]\n")
+                        nf.write("---\n")
+                    nf.write(content)
+                return True
+
+            # Import root notes
+            for note_data in data.get("root_notes", []):
+                if import_dict_note(note_data, None):
+                    imported_any = True
+                    
+            # Import notebooks
+            for notebook_data in data.get("notebooks", []):
+                notebook_name = notebook_data.get("notebook")
+                if notebook_name == "Root":
+                    notebook_name = None
+                for note_data in notebook_data.get("notes", []):
+                    if import_dict_note(note_data, notebook_name):
+                        imported_any = True
+                        
+            if imported_any:
+                self.emit('notebooks-changed')
+                self.emit('files-changed')
+            return imported_any
+        except Exception as e:
+            print(f"Error importing project from json: {e}")
+            return False
+
