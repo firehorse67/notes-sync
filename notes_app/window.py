@@ -980,27 +980,104 @@ class MainWindow(Adw.ApplicationWindow):
                     pdf_path = os.path.join(note_dir, att["src"])
                     break
                     
-        # Gather note count and notes list recursively
+        # Gather note count, list, and note contents recursively
         total_notes = 0
         notes_list = []
+        notes_content_str = ""
+        total_size = 0
+        all_notes = []
         try:
             for root_dir, dirs, files in os.walk(self.file_manager.notes_dir):
+                # Skip hidden directories
+                dirs[:] = [d for d in dirs if not d.startswith('.')]
                 for file in files:
                     if file.endswith(".md"):
-                        total_notes += 1
-                        rel_dir = os.path.relpath(root_dir, self.file_manager.notes_dir)
-                        notebook = "" if rel_dir == "." else rel_dir
-                        note_title = file[:-3]
-                        if notebook:
-                            notes_list.append(f"- [{notebook}] {note_title}")
-                        else:
-                            notes_list.append(f"- {note_title}")
+                        path = os.path.join(root_dir, file)
+                        try:
+                            sz = os.path.getsize(path)
+                            total_size += sz
+                            total_notes += 1
+                            rel_dir = os.path.relpath(root_dir, self.file_manager.notes_dir)
+                            notebook = "" if rel_dir == "." else rel_dir
+                            note_title = file[:-3]
+                            all_notes.append({
+                                'title': note_title,
+                                'notebook': notebook,
+                                'path': path,
+                                'size': sz
+                            })
+                            if notebook:
+                                notes_list.append(f"- [{notebook}] {note_title}")
+                            else:
+                                notes_list.append(f"- {note_title}")
+                        except Exception:
+                            pass
         except Exception:
             pass
+
+        # If total size is small (< 150KB), load all note contents!
+        if total_size < 150 * 1024:
+            contents_list = []
+            for n in all_notes:
+                try:
+                    with open(n['path'], 'r', encoding='utf-8') as f:
+                        raw = f.read()
+                    _, body = self.file_manager._split_front_matter(raw)
+                    header = f"Note: {n['title']}"
+                    if n['notebook']:
+                        header += f" (in notebook: {n['notebook']})"
+                    contents_list.append(f"=== {header} ===\n{body}\n")
+                except Exception:
+                    pass
+            notes_content_str = "\n".join(contents_list)
+        else:
+            # If notes are large, perform keyword filtering based on the prompt
+            words = [w.strip().lower() for w in prompt.split() if len(w.strip()) > 2]
+            matched_notes = []
+            for n in all_notes:
+                # Always include the active note if there is one
+                is_active = False
+                if self.file_manager.active_file_path:
+                    try:
+                        is_active = os.path.samefile(n['path'], self.file_manager.active_file_path)
+                    except Exception:
+                        pass
+                if is_active:
+                    matched_notes.append(n)
+                    continue
+                # Or if the title/notebook is in prompt
+                if n['title'].lower() in prompt.lower() or (n['notebook'] and n['notebook'].lower() in prompt.lower()):
+                    matched_notes.append(n)
+                    continue
+                # Or if keywords match body content
+                try:
+                    body_lower = self.file_manager.get_body_text(n['path'])
+                    if any(word in body_lower for word in words):
+                        matched_notes.append(n)
+                except Exception:
+                    pass
+            
+            # Limit to top 5 notes to avoid huge context
+            matched_notes = matched_notes[:5]
+            contents_list = []
+            for n in matched_notes:
+                try:
+                    with open(n['path'], 'r', encoding='utf-8') as f:
+                        raw = f.read()
+                    _, body = self.file_manager._split_front_matter(raw)
+                    header = f"Note: {n['title']}"
+                    if n['notebook']:
+                        header += f" (in notebook: {n['notebook']})"
+                    contents_list.append(f"=== {header} ===\n{body}\n")
+                except Exception:
+                    pass
+            notes_content_str = "\n".join(contents_list)
             
         workspace_info = f"Total Notes in Workspace: {total_notes}\n"
         if notes_list:
             workspace_info += "Available Notes:\n" + "\n".join(notes_list)
+        if notes_content_str:
+            workspace_info += f"\n\nHere is the content of the notes in the workspace to search through:\n{notes_content_str}"
         
         thread = threading.Thread(
             target=self._ai_query_worker,
@@ -1032,7 +1109,7 @@ class MainWindow(Adw.ApplicationWindow):
                 api_key = config.get("gemini_api_key", "").strip()
                 if not api_key:
                     raise ValueError("Gemini API key is not configured in Settings.")
-                response_text = call_gemini_api(api_key, prompt, pdf_path=pdf_path)
+                response_text = call_gemini_api(api_key, prompt, pdf_path=pdf_path, workspace_info=workspace_info)
             else:
                 api_key = config.get("deepseek_api_key", "").strip()
                 if not api_key:
