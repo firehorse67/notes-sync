@@ -25,7 +25,7 @@ A native Linux WYSIWYG notes application built with Python, GTK4, and Libadwaita
 - **External change detection** — if a note is modified externally (e.g. by a sync), the app reloads it silently or shows a banner if you have unsaved changes
 
 ### Import / Export
-- Export a single note as Markdown or JSON
+- Export a single note as Markdown, JSON, or PDF
 - Export a notebook or the entire project as a ZIP archive or JSON bundle
 - Import notes from Markdown or JSON; import notebooks from ZIP
 

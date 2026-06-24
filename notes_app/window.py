@@ -144,6 +144,11 @@ class MainWindow(Adw.ApplicationWindow):
         exp_json_btn.connect("clicked", self._on_export_json_clicked, transfer_popover)
         transfer_box.append(exp_json_btn)
         
+        exp_pdf_btn = Gtk.Button(label="Export as PDF (.pdf)...")
+        exp_pdf_btn.set_has_frame(False)
+        exp_pdf_btn.connect("clicked", self._on_export_pdf_clicked, transfer_popover)
+        transfer_box.append(exp_pdf_btn)
+
         imp_md_btn = Gtk.Button(label="Import from Markdown (.md)...")
         imp_md_btn.set_has_frame(False)
         imp_md_btn.connect("clicked", self._on_import_markdown_clicked, transfer_popover)
@@ -617,12 +622,12 @@ class MainWindow(Adw.ApplicationWindow):
             accept_label="Import",
             cancel_label="Cancel"
         )
-        
+
         filter_json = Gtk.FileFilter()
         filter_json.set_name("JSON files (*.json)")
         filter_json.add_pattern("*.json")
         dialog.add_filter(filter_json)
-        
+
         def on_response(dialog, response_id):
             if response_id == Gtk.ResponseType.ACCEPT:
                 src = dialog.get_file().get_path()
@@ -633,6 +638,38 @@ class MainWindow(Adw.ApplicationWindow):
                 else:
                     self._show_toast("Failed to import note")
             dialog.destroy()
-            
+
+        dialog.connect("response", on_response)
+        dialog.show()
+
+    def _on_export_pdf_clicked(self, btn, popover):
+        popover.popdown()
+        if not self.file_manager.active_file_path:
+            return
+
+        dialog = Gtk.FileChooserNative(
+            title="Export Note to PDF",
+            transient_for=self,
+            action=Gtk.FileChooserAction.SAVE,
+            accept_label="Export",
+            cancel_label="Cancel"
+        )
+        title = self.file_manager.get_display_title(self.file_manager.active_file_path)
+        dialog.set_current_name(f"{title}.pdf")
+
+        filter_pdf = Gtk.FileFilter()
+        filter_pdf.set_name("PDF files (*.pdf)")
+        filter_pdf.add_pattern("*.pdf")
+        dialog.add_filter(filter_pdf)
+
+        def on_response(dialog, response_id):
+            if response_id == Gtk.ResponseType.ACCEPT:
+                dest = dialog.get_file().get_path()
+                if self.file_manager.export_note_to_pdf(self.file_manager.active_file_path, dest):
+                    self._show_toast("Exported to PDF")
+                else:
+                    self._show_toast("Failed to export as PDF")
+            dialog.destroy()
+
         dialog.connect("response", on_response)
         dialog.show()

@@ -847,6 +847,236 @@ def hello_world():
             return None
 
 
+    def export_note_to_pdf(self, note_path, dest_path):
+        """Export a note to PDF using Cairo + PangoCairo (no extra dependencies required)."""
+        import re
+        import cairo
+        import gi
+        gi.require_version('Pango', '1.0')
+        gi.require_version('PangoCairo', '1.0')
+        from gi.repository import Pango, PangoCairo
+
+        def md_to_pango(text):
+            text = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+            text = re.sub(r'\*\*\*(.+?)\*\*\*', r'<b><i>\1</i></b>', text)
+            text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
+            text = re.sub(r'__(.+?)__', r'<b>\1</b>', text)
+            text = re.sub(r'\*(.+?)\*', r'<i>\1</i>', text)
+            text = re.sub(r'_(.+?)_', r'<i>\1</i>', text)
+            text = re.sub(r'`(.+?)`', r'<tt>\1</tt>', text)
+            text = re.sub(r'~~(.+?)~~', r'\1', text)
+            text = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', text)
+            return text
+
+        def parse_blocks(content, note_title):
+            blocks = []
+            lines = content.splitlines()
+            i = 0
+            first_h1_skipped = False
+            while i < len(lines):
+                line = lines[i]
+                if line.startswith('```') or line.startswith('~~~'):
+                    fence = line[:3]
+                    code_lines = []
+                    i += 1
+                    while i < len(lines) and not lines[i].startswith(fence):
+                        code_lines.append(lines[i])
+                        i += 1
+                    blocks.append(('code', '\n'.join(code_lines)))
+                elif line.startswith('### '):
+                    blocks.append(('h3', line[4:].strip()))
+                elif line.startswith('## '):
+                    blocks.append(('h2', line[3:].strip()))
+                elif line.startswith('# '):
+                    htext = line[2:].strip()
+                    if not first_h1_skipped and htext == note_title:
+                        first_h1_skipped = True
+                    else:
+                        blocks.append(('h1', htext))
+                elif line.startswith('> '):
+                    blocks.append(('blockquote', line[2:].strip()))
+                elif re.match(r'^[-*+] ', line):
+                    blocks.append(('ul_item', line[2:].strip()))
+                elif re.match(r'^\d+[.)]\s', line):
+                    blocks.append(('ol_item', re.sub(r'^\d+[.)]\s+', '', line).strip()))
+                elif re.match(r'^[-_*]{3,}\s*$', line.strip()):
+                    blocks.append(('hr', ''))
+                elif line.strip() == '':
+                    blocks.append(('blank', ''))
+                else:
+                    blocks.append(('p', line.strip()))
+                i += 1
+            return blocks
+
+        try:
+            data = self.get_note_as_dict(note_path)
+            if not data:
+                return False
+
+            note_title = data['title']
+            content = data['content']
+
+            PAGE_W, PAGE_H = 595.28, 841.89
+            ML, MR, MT, MB = 72.0, 72.0, 72.0, 72.0
+            CW = PAGE_W - ML - MR
+
+            surface = cairo.PDFSurface(dest_path, PAGE_W, PAGE_H)
+            ctx = cairo.Context(surface)
+            y = [MT]
+
+            def new_page():
+                ctx.show_page()
+                y[0] = MT
+
+            def fit(needed):
+                if y[0] + needed > PAGE_H - MB and y[0] > MT + 2:
+                    new_page()
+
+            def make_lo(text_or_markup, font_desc, width=None, markup=True):
+                lo = PangoCairo.create_layout(ctx)
+                lo.set_font_description(Pango.FontDescription(font_desc))
+                lo.set_width(int((width or CW) * Pango.SCALE))
+                lo.set_wrap(Pango.WrapMode.WORD_CHAR)
+                if markup:
+                    lo.set_markup(text_or_markup, -1)
+                else:
+                    lo.set_text(text_or_markup, -1)
+                return lo
+
+            def lh(lo):
+                _, ext = lo.get_extents()
+                return ext.height / Pango.SCALE
+
+            # Document title
+            t_lo = make_lo(md_to_pango(note_title), 'Sans Bold 20')
+            th = lh(t_lo)
+            ctx.set_source_rgb(0.063, 0.086, 0.122)
+            ctx.move_to(ML, y[0])
+            PangoCairo.show_layout(ctx, t_lo)
+            y[0] += th + 6
+            ctx.set_source_rgb(0.82, 0.84, 0.87)
+            ctx.set_line_width(0.75)
+            ctx.move_to(ML, y[0])
+            ctx.line_to(PAGE_W - MR, y[0])
+            ctx.stroke()
+            y[0] += 16
+
+            ol_n = [0]
+
+            for btype, btext in parse_blocks(content, note_title):
+                if btype != 'ol_item':
+                    ol_n[0] = 0
+
+                if btype == 'blank':
+                    y[0] += 5
+                elif btype == 'hr':
+                    fit(14)
+                    ctx.set_source_rgb(0.82, 0.84, 0.87)
+                    ctx.set_line_width(0.5)
+                    ctx.move_to(ML, y[0] + 5)
+                    ctx.line_to(PAGE_W - MR, y[0] + 5)
+                    ctx.stroke()
+                    y[0] += 14
+                elif btype == 'h1':
+                    y[0] += 10
+                    lo = make_lo(md_to_pango(btext), 'Sans Bold 18')
+                    h = lh(lo)
+                    fit(h + 18)
+                    ctx.set_source_rgb(0.063, 0.086, 0.122)
+                    ctx.move_to(ML, y[0])
+                    PangoCairo.show_layout(ctx, lo)
+                    y[0] += h + 5
+                    ctx.set_source_rgb(0.86, 0.88, 0.90)
+                    ctx.set_line_width(0.5)
+                    ctx.move_to(ML, y[0])
+                    ctx.line_to(PAGE_W - MR, y[0])
+                    ctx.stroke()
+                    y[0] += 8
+                elif btype == 'h2':
+                    y[0] += 8
+                    lo = make_lo(md_to_pango(btext), 'Sans Bold 14')
+                    h = lh(lo)
+                    fit(h + 14)
+                    ctx.set_source_rgb(0.063, 0.086, 0.122)
+                    ctx.move_to(ML, y[0])
+                    PangoCairo.show_layout(ctx, lo)
+                    y[0] += h + 6
+                elif btype == 'h3':
+                    y[0] += 6
+                    lo = make_lo(md_to_pango(btext), 'Sans Bold 12')
+                    h = lh(lo)
+                    fit(h + 10)
+                    ctx.set_source_rgb(0.063, 0.086, 0.122)
+                    ctx.move_to(ML, y[0])
+                    PangoCairo.show_layout(ctx, lo)
+                    y[0] += h + 5
+                elif btype == 'p':
+                    if not btext.strip():
+                        y[0] += 5
+                        continue
+                    lo = make_lo(md_to_pango(btext), 'Sans 11')
+                    h = lh(lo)
+                    fit(h + 5)
+                    ctx.set_source_rgb(0.122, 0.161, 0.216)
+                    ctx.move_to(ML, y[0])
+                    PangoCairo.show_layout(ctx, lo)
+                    y[0] += h + 5
+                elif btype == 'code':
+                    lo = make_lo(btext, 'Monospace 9', width=CW - 20, markup=False)
+                    h = lh(lo)
+                    fit(h + 18)
+                    ctx.set_source_rgb(0.961, 0.965, 0.969)
+                    ctx.rectangle(ML - 8, y[0] - 4, CW + 16, h + 16)
+                    ctx.fill()
+                    ctx.set_source_rgb(0.612, 0.647, 0.686)
+                    ctx.rectangle(ML - 8, y[0] - 4, 3, h + 16)
+                    ctx.fill()
+                    ctx.set_source_rgb(0.282, 0.322, 0.376)
+                    ctx.move_to(ML + 4, y[0] + 4)
+                    PangoCairo.show_layout(ctx, lo)
+                    y[0] += h + 18
+                elif btype == 'blockquote':
+                    lo = make_lo(md_to_pango(btext), 'Sans Italic 11', width=CW - 20)
+                    h = lh(lo)
+                    fit(h + 8)
+                    ctx.set_source_rgb(0.82, 0.84, 0.87)
+                    ctx.rectangle(ML, y[0] - 2, 3, h + 4)
+                    ctx.fill()
+                    ctx.set_source_rgb(0.42, 0.45, 0.50)
+                    ctx.move_to(ML + 14, y[0])
+                    PangoCairo.show_layout(ctx, lo)
+                    y[0] += h + 6
+                elif btype == 'ul_item':
+                    lo = make_lo(md_to_pango(btext), 'Sans 11', width=CW - 18)
+                    h = lh(lo)
+                    fit(h + 4)
+                    ctx.set_source_rgb(0.42, 0.45, 0.50)
+                    ctx.arc(ML + 6, y[0] + 7, 2.5, 0, 6.2832)
+                    ctx.fill()
+                    ctx.set_source_rgb(0.122, 0.161, 0.216)
+                    ctx.move_to(ML + 18, y[0])
+                    PangoCairo.show_layout(ctx, lo)
+                    y[0] += h + 3
+                elif btype == 'ol_item':
+                    ol_n[0] += 1
+                    lo = make_lo(md_to_pango(btext), 'Sans 11', width=CW - 24)
+                    h = lh(lo)
+                    fit(h + 4)
+                    num_lo = make_lo(f'{ol_n[0]}.', 'Sans 11', width=20)
+                    ctx.set_source_rgb(0.122, 0.161, 0.216)
+                    ctx.move_to(ML, y[0])
+                    PangoCairo.show_layout(ctx, num_lo)
+                    ctx.move_to(ML + 24, y[0])
+                    PangoCairo.show_layout(ctx, lo)
+                    y[0] += h + 3
+
+            surface.finish()
+            return True
+
+        except Exception as e:
+            print(f'Error exporting note to PDF: {e}')
+            return False
+
     def export_note_to_markdown(self, note_path, dest_path):
         """Copy the raw markdown file to a destination path."""
         try:
