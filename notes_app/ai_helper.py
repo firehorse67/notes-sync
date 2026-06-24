@@ -37,7 +37,7 @@ def call_gemini_api(api_key, prompt, pdf_path=None):
         raise ValueError("Invalid response structure received from Gemini API.")
 
 def call_deepseek_api(api_key, prompt, note_content=None):
-    url = "https://api.deepseek.com/v1/chat/completions"
+    url = "https://api.deepseek.com/chat/completions"
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json"
