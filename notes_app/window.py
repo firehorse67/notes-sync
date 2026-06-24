@@ -281,8 +281,13 @@ class MainWindow(Adw.ApplicationWindow):
             }
 
             /* Reset color inheritance inside popovers so buttons are readable */
-            popover label, popover button label {
-                color: #1f2937;
+            headerbar popover button,
+            headerbar popover label,
+            headerbar popover image,
+            .nav-bar-blue popover button,
+            .nav-bar-blue popover label,
+            .nav-bar-blue popover image {
+                color: @theme_text_color;
             }
 
             /* Tag Pills */
