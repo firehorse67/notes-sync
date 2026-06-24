@@ -55,6 +55,15 @@ class HTMLToBufferParser(HTMLParser):
                 self.active_tags.append('code_block')
             else:
                 self.active_tags.append('code_inline')
+        elif tag == 'blockquote':
+            self.active_tags.append('blockquote')
+        elif tag == 'hr':
+            self.active_tags.append('hr')
+            start_iter = self.buffer.get_end_iter()
+            self.buffer.insert_with_tags_by_name(start_iter, "────────────────────────────────────────", "hr")
+            self.active_tags.remove('hr')
+            self.buffer.insert(self.buffer.get_end_iter(), "\n")
+            self.current_line_is_empty = True
         elif tag == 'a':
             attrs_dict = dict(attrs)
             href = attrs_dict.get('href', '')
@@ -100,6 +109,11 @@ class HTMLToBufferParser(HTMLParser):
                 self.active_tags.remove('code_block')
             elif 'code_inline' in self.active_tags:
                 self.active_tags.remove('code_inline')
+        elif tag == 'blockquote':
+            if 'blockquote' in self.active_tags:
+                self.active_tags.remove('blockquote')
+            self.buffer.insert(self.buffer.get_end_iter(), "\n")
+            self.current_line_is_empty = True
         elif tag == 'p':
             self.buffer.insert(self.buffer.get_end_iter(), "\n")
             self.current_line_is_empty = True
@@ -122,7 +136,7 @@ class HTMLToBufferParser(HTMLParser):
         start_iter = self.buffer.get_end_iter()
         names = [t for t in self.active_tags if t in (
             'h1', 'h2', 'h3', 'bold', 'italic',
-            'bullet', 'numbered', 'code_block', 'code_inline'
+            'bullet', 'numbered', 'code_block', 'code_inline', 'blockquote', 'hr'
         )]
         self.buffer.insert_with_tags_by_name(start_iter, data, *names)
         self.current_line_is_empty = False
@@ -196,6 +210,11 @@ class MarkdownEditor(Gtk.Box):
         btn_code_block.connect("clicked", lambda b: self.set_line_format("code_block"))
         self.toolbar.append(btn_code_block)
 
+        btn_quote = Gtk.Button.new_from_icon_name("format-text-quote-symbolic")
+        btn_quote.set_tooltip_text("Blockquote")
+        btn_quote.connect("clicked", lambda b: self.set_line_format("blockquote"))
+        self.toolbar.append(btn_quote)
+
         btn_normal = Gtk.Button(label="Normal")
         btn_normal.set_tooltip_text("Normal Text (Ctrl+0)")
         btn_normal.connect("clicked", lambda b: self.set_line_format("paragraph"))
@@ -236,6 +255,8 @@ class MarkdownEditor(Gtk.Box):
         self.buffer.create_tag("italic", style=Pango.Style.ITALIC)
         self.buffer.create_tag("code_inline", family="monospace", background="#f1f3f5", foreground="#c0392b")
         self.buffer.create_tag("code_block", family="monospace", background="#f8f9fa", left_margin=16, right_margin=16, pixels_above_lines=1, pixels_below_lines=1)
+        self.buffer.create_tag("blockquote", left_margin=32, pixels_above_lines=6, pixels_below_lines=6, style=Pango.Style.ITALIC, foreground="#4b5563")
+        self.buffer.create_tag("hr", foreground="#9ca3af", pixels_above_lines=8, pixels_below_lines=8, scale=0.8)
 
         # CSS
         self.view.get_style_context().add_class("editor-view")
@@ -255,16 +276,28 @@ class MarkdownEditor(Gtk.Box):
                 border-bottom: 1px solid rgba(0, 0, 0, 0.08);
             }
             box.attachment-pill {
-                background-color: #f3f4f6;
-                border: 1px solid rgba(0, 0, 0, 0.08);
-                border-radius: 16px;
-                padding: 4px 10px;
+                background: linear-gradient(135deg, #f9fafb, #f3f4f6);
+                border: 1px solid rgba(0, 0, 0, 0.06);
+                border-radius: 20px;
+                padding: 6px 12px;
                 color: #374151;
-                margin: 3px;
+                margin: 4px;
+                box-shadow: 0 2px 4px rgba(0, 0, 0, 0.02);
             }
             box.attachment-pill:hover {
-                background-color: #e5e7eb;
-                border-color: rgba(0, 0, 0, 0.15);
+                background: linear-gradient(135deg, #f3f4f6, #e5e7eb);
+                border-color: rgba(0, 0, 0, 0.12);
+                box-shadow: 0 4px 6px rgba(0, 0, 0, 0.04);
+            }
+            .attachment-open-btn {
+                color: #2563eb;
+                font-weight: 500;
+                font-size: 10pt;
+                padding: 0 4px;
+            }
+            .attachment-open-btn:hover {
+                color: #1d4ed8;
+                text-decoration: underline;
             }
             .attachment-delete-btn {
                 color: #9ca3af;
@@ -367,7 +400,7 @@ class MarkdownEditor(Gtk.Box):
     def get_content(self):
         """Serialize Gtk.TextBuffer content to clean Markdown."""
         line_count = self.buffer.get_line_count()
-        markdown_lines = []  # list of (line_str, is_code_block, is_numbered)
+        markdown_lines = []  # list of (line_str, is_code_block, is_numbered, is_blockquote, is_hr)
 
         for line_idx in range(line_count):
             _, line_start = self.buffer.get_iter_at_line(line_idx)
@@ -384,6 +417,8 @@ class MarkdownEditor(Gtk.Box):
             is_bullet = "bullet" in line_tags
             is_numbered = "numbered" in line_tags
             is_code_block = "code_block" in line_tags
+            is_blockquote = "blockquote" in line_tags
+            is_hr = "hr" in line_tags
 
             runs = []
 
@@ -458,7 +493,9 @@ class MarkdownEditor(Gtk.Box):
                 else:
                     line_content += text
 
-            if is_code_block:
+            if is_hr:
+                line_markdown = "---"
+            elif is_code_block:
                 line_markdown = line_content.rstrip()
             elif is_h1:
                 line_markdown = f"# {line_content.strip()}"
@@ -470,23 +507,27 @@ class MarkdownEditor(Gtk.Box):
                 line_markdown = f"- {line_content.strip()}"
             elif is_numbered:
                 line_markdown = line_content.rstrip()  # "N. content" already in buffer text
+            elif is_blockquote:
+                line_markdown = f"> {line_content.strip()}"
             else:
                 line_markdown = line_content.rstrip()
 
-            markdown_lines.append((line_markdown, is_code_block, is_numbered))
+            markdown_lines.append((line_markdown, is_code_block, is_numbered, is_blockquote, is_hr))
 
         result = []
         in_list = False
+        in_blockquote = False
         in_code_block = False
 
-        for line, is_code, is_num in markdown_lines:
+        for line, is_code, is_num, is_bq, is_hr_line in markdown_lines:
             trimmed = line.strip()
 
             if is_code:
                 if not in_code_block:
-                    if in_list:
+                    if in_list or in_blockquote:
                         result.append("")
                         in_list = False
+                        in_blockquote = False
                     elif result and result[-1] != "":
                         result.append("")
                     result.append("```")
@@ -504,17 +545,23 @@ class MarkdownEditor(Gtk.Box):
                     result.append("")
                 continue
 
-            is_list_item = trimmed.startswith("- ") or bool(re.match(r'^\d+\. ', trimmed))
-
-            if is_list_item:
+            if is_num or trimmed.startswith("- "):
                 if not in_list and result and result[-1] != "":
                     result.append("")
                 in_list = True
+                in_blockquote = False
+                result.append(line)
+            elif is_bq:
+                if not in_blockquote and result and result[-1] != "":
+                    result.append("")
+                in_blockquote = True
+                in_list = False
                 result.append(line)
             else:
-                if in_list:
+                if in_list or in_blockquote:
                     result.append("")
                     in_list = False
+                    in_blockquote = False
                 elif result and result[-1] != "":
                     result.append("")
                 result.append(line)
@@ -600,7 +647,7 @@ class MarkdownEditor(Gtk.Box):
                     if not line_end.ends_line():
                         line_end.forward_to_line_end()
 
-            for tname in ["h1", "h2", "h3", "bullet", "numbered", "code_block"]:
+            for tname in ["h1", "h2", "h3", "bullet", "numbered", "code_block", "blockquote"]:
                 self.buffer.remove_tag_by_name(tname, line_start, line_end)
 
             if format_type in ["h1", "h2", "h3"]:
@@ -622,6 +669,8 @@ class MarkdownEditor(Gtk.Box):
                 self.buffer.apply_tag_by_name("numbered", line_start, line_end)
             elif format_type == "code_block":
                 self.buffer.apply_tag_by_name("code_block", line_start, line_end)
+            elif format_type == "blockquote":
+                self.buffer.apply_tag_by_name("blockquote", line_start, line_end)
         finally:
             self.buffer.end_user_action()
 
@@ -736,11 +785,32 @@ class MarkdownEditor(Gtk.Box):
                     new_line_end = new_line_start.copy()
                     if not new_line_end.ends_line():
                         new_line_end.forward_to_line_end()
-                    for tname in ["h1", "h2", "h3", "bullet", "numbered"]:
+                    for tname in ["h1", "h2", "h3", "bullet", "numbered", "blockquote"]:
                         self.buffer.remove_tag_by_name(tname, new_line_start, new_line_end)
                 finally:
                     self.buffer.end_user_action()
                 return True
+
+            elif "blockquote" in line_tags:
+                cleaned_text = line_text.strip()
+                if not cleaned_text:
+                    self.set_line_format("paragraph")
+                    return True
+                else:
+                    self.buffer.begin_user_action()
+                    try:
+                        self.buffer.insert(curr_iter, "\n")
+                        new_insert_mark = self.buffer.get_insert()
+                        new_iter = self.buffer.get_iter_at_mark(new_insert_mark)
+                        new_line_start = new_iter.copy()
+                        new_line_start.set_line_offset(0)
+                        new_line_end = new_line_start.copy()
+                        if not new_line_end.ends_line():
+                            new_line_end.forward_to_line_end()
+                        self.buffer.apply_tag_by_name("blockquote", new_line_start, new_line_end)
+                    finally:
+                        self.buffer.end_user_action()
+                    return True
 
         elif keyval == Gdk.KEY_BackSpace:
             insert_mark = self.buffer.get_insert()
@@ -754,6 +824,9 @@ class MarkdownEditor(Gtk.Box):
                 self.set_line_format("paragraph")
                 return True
             elif "numbered" in line_tags and curr_iter.get_line_offset() <= 4:
+                self.set_line_format("paragraph")
+                return True
+            elif "blockquote" in line_tags and curr_iter.get_line_offset() == 0:
                 self.set_line_format("paragraph")
                 return True
 
@@ -863,10 +936,18 @@ class MarkdownEditor(Gtk.Box):
         pill = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
         pill.get_style_context().add_class("attachment-pill")
 
-        if ext in ('png', 'jpg', 'jpeg', 'webp'):
+        if ext in ('png', 'jpg', 'jpeg', 'webp', 'gif', 'svg'):
             icon_name = "image-x-generic-symbolic"
-        elif ext in ('zip', 'tar', 'gzip'):
+        elif ext == 'pdf':
+            icon_name = "document-pdf-symbolic"
+        elif ext in ('zip', 'tar', 'tgz', 'gz', 'bz2', 'xz', 'rar', '7z'):
             icon_name = "package-x-generic-symbolic"
+        elif ext in ('mp3', 'wav', 'ogg', 'm4a', 'flac'):
+            icon_name = "audio-x-generic-symbolic"
+        elif ext in ('mp4', 'mkv', 'avi', 'mov', 'webm'):
+            icon_name = "video-x-generic-symbolic"
+        elif ext in ('md', 'txt', 'rst', 'json', 'yaml', 'yml', 'xml', 'csv'):
+            icon_name = "text-x-generic-symbolic"
         else:
             icon_name = "document-x-generic-symbolic"
 
@@ -874,6 +955,7 @@ class MarkdownEditor(Gtk.Box):
 
         open_btn = Gtk.Button(label=display_name)
         open_btn.set_has_frame(False)
+        open_btn.get_style_context().add_class("attachment-open-btn")
         def on_open(b, path=full_path):
             try:
                 file_uri = GLib.filename_to_uri(os.path.abspath(path), None)
