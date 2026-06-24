@@ -109,26 +109,36 @@ class MoveNoteDialog(Gtk.Dialog):
 
 
 class NoteRow(Gtk.ListBoxRow):
-    def __init__(self, title, file_path, mtime, tags):
+    def __init__(self, title, file_path, mtime, tags, pinned=False):
         super().__init__()
         self.file_path = file_path
         self.title = title
         self.mtime = mtime
         self.tags = tags
-        
+        self.pinned = pinned
+
         self.box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         self.box.set_margin_start(16)
         self.box.set_margin_end(16)
         self.box.set_margin_top(10)
         self.box.set_margin_bottom(10)
-        
-        # Title
+
+        # Title row (with optional pin icon)
+        title_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
         self.title_label = Gtk.Label()
+        self.title_label.set_hexpand(True)
         self.title_label.set_halign(Gtk.Align.START)
         self.title_label.set_ellipsize(3)
         self.title_label.set_use_markup(True)
         self.update_title_label(title)
-        self.box.append(self.title_label)
+        title_row.append(self.title_label)
+
+        self.pin_icon = Gtk.Image.new_from_icon_name("pin-symbolic")
+        self.pin_icon.get_style_context().add_class("dim-label")
+        self.pin_icon.set_visible(pinned)
+        title_row.append(self.pin_icon)
+
+        self.box.append(title_row)
         
         # Subtitle
         self.subtitle_label = Gtk.Label()
@@ -169,6 +179,10 @@ class NoteRow(Gtk.ListBoxRow):
             lbl = Gtk.Label(label=tag)
             lbl.get_style_context().add_class("tag-pill")
             self.tags_box.append(lbl)
+
+    def update_pinned(self, pinned):
+        self.pinned = pinned
+        self.pin_icon.set_visible(pinned)
 
 
 class TagManagerRow(Gtk.Box):
@@ -297,6 +311,7 @@ class SidebarView(Gtk.Box):
         'move-note': (GObject.SignalFlags.RUN_FIRST, None, (str, str)),
         'rename-tag-global': (GObject.SignalFlags.RUN_FIRST, None, (str, str)),
         'delete-tag-global': (GObject.SignalFlags.RUN_FIRST, None, (str,)),
+        'pin-note': (GObject.SignalFlags.RUN_FIRST, None, (str, bool)),
     }
 
     def __init__(self, file_manager):
@@ -500,7 +515,7 @@ class SidebarView(Gtk.Box):
         row_to_select = None
         for file_info in files:
             title = self.file_manager.get_display_title(file_info['path'])
-            row = NoteRow(title, file_info['path'], file_info['mtime'], file_info['tags'])
+            row = NoteRow(title, file_info['path'], file_info['mtime'], file_info['tags'], file_info.get('pinned', False))
             self.list_box.append(row)
             
             if file_info['path'] == selected_path:
@@ -511,6 +526,16 @@ class SidebarView(Gtk.Box):
             
         # Repopulate tags filter dropdown
         self.populate_tags_filter()
+
+    def update_note_row(self, path, title, mtime):
+        """Update a single row's title and timestamp without rebuilding the whole list."""
+        row = self.list_box.get_first_child()
+        while row:
+            if hasattr(row, 'file_path') and row.file_path == path:
+                row.update_title_label(title)
+                row.update_subtitle_label(mtime)
+                return
+            row = row.get_next_sibling()
 
     def populate_tags_filter(self):
         """Build tag filter dropdown options based on active tags."""
@@ -649,19 +674,20 @@ class SidebarView(Gtk.Box):
         self.list_box.invalidate_filter()
 
     def _filter_row(self, row):
-        # 1. Search text filter
+        # 1. Search text filter (title, filename, and full body)
         search_text = self.search_entry.get_text().strip().lower()
         if search_text:
             title_match = search_text in row.title.lower()
             filename_match = search_text in os.path.basename(row.file_path).lower()
-            if not (title_match or filename_match):
+            body_match = search_text in self.file_manager.get_body_text(row.file_path)
+            if not (title_match or filename_match or body_match):
                 return False
-                
+
         # 2. Tag filter
         if self.active_tag:
             if self.active_tag not in row.tags:
                 return False
-                
+
         return True
 
     def _on_add_clicked(self, button):
@@ -692,6 +718,13 @@ class SidebarView(Gtk.Box):
         box.set_margin_top(4)
         box.set_margin_bottom(4)
         
+        pin_label = "Unpin" if row.pinned else "Pin"
+        pin_btn = Gtk.Button(label=pin_label)
+        pin_btn.set_has_frame(False)
+        pin_btn.set_halign(Gtk.Align.FILL)
+        pin_btn.connect("clicked", lambda b: self._on_context_pin(popover, row))
+        box.append(pin_btn)
+
         rename_btn = Gtk.Button(label="Rename")
         rename_btn.set_has_frame(False)
         rename_btn.set_halign(Gtk.Align.FILL)
@@ -720,6 +753,10 @@ class SidebarView(Gtk.Box):
         rect.height = 1
         popover.set_pointing_to(rect)
         popover.popup()
+
+    def _on_context_pin(self, popover, row):
+        popover.popdown()
+        self.emit("pin-note", row.file_path, not row.pinned)
 
     def _on_context_rename(self, popover, row):
         popover.popdown()

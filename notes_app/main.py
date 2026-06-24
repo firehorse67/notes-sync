@@ -9,7 +9,7 @@ from .window import MainWindow
 class NotesApplication(Adw.Application):
     def __init__(self):
         super().__init__(
-            application_id="com.github.michael.notesapp",
+            application_id="com.github.firehorse67.notessync",
             flags=sys.argv[0] == ""
         )
         self.file_manager = None

@@ -3,6 +3,7 @@ import json
 import shutil
 import zipfile
 import tempfile
+import threading
 from gi.repository import GObject, Gio, GLib
 from .config import ensure_notes_dir
 
@@ -13,6 +14,8 @@ class FileManager(GObject.Object):
         'external-change-detected': (GObject.SignalFlags.RUN_FIRST, None, (bool,)),  # has_unsaved_changes
         'save-status-changed': (GObject.SignalFlags.RUN_FIRST, None, (str,)),  # "saved", "unsaved", "saving"
         'notebooks-changed': (GObject.SignalFlags.RUN_FIRST, None, ()),
+        'note-saved': (GObject.SignalFlags.RUN_FIRST, None, (str, str, GObject.TYPE_DOUBLE)),  # path, title, mtime
+        'sync-status-changed': (GObject.SignalFlags.RUN_FIRST, None, (str,)),  # "syncing", "done", "error"
     }
 
     def __init__(self):
@@ -26,6 +29,10 @@ class FileManager(GObject.Object):
         self.auto_save_enabled = True
         
         self._autosave_timer_id = None
+        self._metadata_cache = {}
+        self._cached_front_matter = {}   # path -> front_matter_str; avoids re-read on every save
+        self._suppress_files_changed = False  # batches signal during global tag ops
+        self._content_index = {}         # path -> {mtime, text} for full-text search
         
         # Dual monitors: 
         # 1. Root monitor for tracking notebooks (subdirs)
@@ -39,6 +46,17 @@ class FileManager(GObject.Object):
         
         # Generate default Markdown Tips note
         self._ensure_markdown_tips_note()
+
+    def _split_front_matter(self, raw_content):
+        """Splits raw note content into (front_matter_str, body_str)."""
+        lines = raw_content.splitlines(keepends=True)
+        if len(lines) > 0 and lines[0].strip() == "---":
+            for i in range(1, len(lines)):
+                if lines[i].strip() == "---":
+                    front_matter = "".join(lines[:i+1])
+                    body = "".join(lines[i+1:])
+                    return front_matter, body
+        return "", raw_content
 
     def _get_active_dir(self):
         """Get path to the currently active directory."""
@@ -108,51 +126,90 @@ class FileManager(GObject.Object):
                     path = os.path.join(target_dir, name)
                     try:
                         mtime = os.path.getmtime(path)
-                        tags = self.get_tags_for_file(path)
+                        meta = self._get_front_matter_metadata(path)
                         files.append({
                             'name': name,
                             'path': path,
                             'mtime': mtime,
-                            'tags': tags
+                            'tags': meta['tags'],
+                            'pinned': meta['pinned'],
                         })
                     except OSError:
                         continue
         except OSError as e:
             print(f"Error listing files: {e}")
-            
-        files.sort(key=lambda x: x['mtime'], reverse=True)
+
+        # Pinned notes first, then newest-modified first within each group
+        files.sort(key=lambda x: (not x['pinned'], -x['mtime']))
         return files
 
-    def get_tags_for_file(self, file_path):
-        """Parse YAML front matter tags from a note file."""
-        tags = []
+    def _get_front_matter_metadata(self, file_path):
+        """Return {'tags': [...], 'pinned': bool} from YAML front matter with mtime caching."""
         if not os.path.exists(file_path):
-            return tags
+            return {'tags': [], 'pinned': False}
+        try:
+            mtime = os.path.getmtime(file_path)
+            if file_path in self._metadata_cache:
+                cached = self._metadata_cache[file_path]
+                if cached['mtime'] == mtime:
+                    return {'tags': cached['tags'], 'pinned': cached.get('pinned', False)}
+        except OSError:
+            return {'tags': [], 'pinned': False}
+
+        tags = []
+        pinned = False
         try:
             with open(file_path, "r", encoding="utf-8") as f:
-                # Read up to 15 lines to find front-matter
-                lines = []
-                for _ in range(15):
-                    line = f.readline()
-                    if not line:
-                        break
-                    lines.append(line)
-                    
-            if len(lines) > 0 and lines[0].strip() == "---":
-                for line in lines[1:]:
-                    line = line.strip()
-                    if line == "---":
-                        break
-                    if line.startswith("tags:"):
-                        tags_str = line.split(":", 1)[1].strip()
-                        # Bracket format: [tag1, tag2]
-                        if tags_str.startswith("[") and tags_str.endswith("]"):
-                            tags_str = tags_str[1:-1]
-                        tags = [t.strip() for t in tags_str.split(",") if t.strip()]
-                        break
+                first_line = f.readline()
+                if first_line.strip() == "---":
+                    for _ in range(50):
+                        line = f.readline()
+                        if not line or line.strip() == "---":
+                            break
+                        stripped = line.strip()
+                        if stripped.startswith("tags:"):
+                            tags_str = stripped.split(":", 1)[1].strip()
+                            if tags_str.startswith("[") and tags_str.endswith("]"):
+                                tags_str = tags_str[1:-1]
+                            tags = [t.strip() for t in tags_str.split(",") if t.strip()]
+                        elif stripped == "pinned: true":
+                            pinned = True
         except OSError:
             pass
-        return tags
+
+        if file_path not in self._metadata_cache:
+            self._metadata_cache[file_path] = {'mtime': mtime, 'tags': tags, 'title': None, 'pinned': pinned}
+        else:
+            self._metadata_cache[file_path].update({'mtime': mtime, 'tags': tags, 'pinned': pinned})
+
+        return {'tags': tags, 'pinned': pinned}
+
+    def get_tags_for_file(self, file_path):
+        return self._get_front_matter_metadata(file_path)['tags']
+
+    def get_pinned_for_file(self, file_path):
+        return self._get_front_matter_metadata(file_path)['pinned']
+
+    def get_body_text(self, file_path):
+        """Return lowercased body text for full-text search, cached by mtime."""
+        if not os.path.exists(file_path):
+            return ""
+        try:
+            mtime = os.path.getmtime(file_path)
+        except OSError:
+            return ""
+        cached = self._content_index.get(file_path)
+        if cached and cached['mtime'] == mtime:
+            return cached['text']
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            _, body = self._split_front_matter(content)
+            text = body.lower()
+            self._content_index[file_path] = {'mtime': mtime, 'text': text}
+            return text
+        except OSError:
+            return ""
 
     def get_all_tags(self):
         """Get list of all unique tags in the active notebook."""
@@ -166,6 +223,16 @@ class FileManager(GObject.Object):
         """Read first line of file. If it starts with # header, return it. Otherwise, return filename."""
         if not os.path.exists(file_path):
             return os.path.basename(file_path)
+        try:
+            mtime = os.path.getmtime(file_path)
+            if file_path in self._metadata_cache:
+                cached = self._metadata_cache[file_path]
+                if cached['mtime'] == mtime and cached['title'] is not None:
+                    return cached['title']
+        except OSError:
+            return os.path.basename(file_path)
+
+        title = None
         try:
             with open(file_path, "r", encoding="utf-8") as f:
                 # Skip YAML front-matter if present
@@ -181,14 +248,24 @@ class FileManager(GObject.Object):
                 
                 if first_line.startswith("#"):
                     title = first_line.lstrip("#").strip()
-                    if title:
-                        return title
         except OSError:
             pass
-        basename = os.path.basename(file_path)
-        if basename.endswith(".md"):
-            return basename[:-3]
-        return basename
+
+        if not title:
+            basename = os.path.basename(file_path)
+            if basename.endswith(".md"):
+                title = basename[:-3]
+            else:
+                title = basename
+
+        # Update cache
+        if file_path not in self._metadata_cache:
+            self._metadata_cache[file_path] = {'mtime': mtime, 'tags': [], 'title': title}
+        else:
+            self._metadata_cache[file_path]['mtime'] = mtime
+            self._metadata_cache[file_path]['title'] = title
+
+        return title
 
     def create_new_note(self, title):
         """Create a new note file in the active notebook."""
@@ -275,33 +352,64 @@ class FileManager(GObject.Object):
                 content = f.read()
             self.active_file_mtime = os.path.getmtime(path)
             self.dirty = False
-            self.emit('file-loaded', path, content)
+            fm, body = self._split_front_matter(content)
+            self._cached_front_matter[path] = fm
+            self.emit('file-loaded', path, body)
             self.emit('save-status-changed', 'saved')
             return True
         except OSError as e:
             print(f"Error loading note: {e}")
             return False
 
-    def save_active_file(self, content):
-        """Save content immediately to disk."""
+    def save_active_file(self, content, on_complete=None, get_content_func=None):
+        """Save content asynchronously to disk, preserving front matter."""
         if not self.active_file_path:
+            if on_complete:
+                on_complete(False)
             return False
             
         self.cancel_autosave_timer()
         self.emit('save-status-changed', 'saving')
         
-        try:
-            with open(self.active_file_path, "w", encoding="utf-8") as f:
-                f.write(content)
-            self.active_file_mtime = os.path.getmtime(self.active_file_path)
-            self.dirty = False
-            self.emit('save-status-changed', 'saved')
-            self.emit('files-changed')
-            return True
-        except OSError as e:
-            print(f"Error saving note: {e}")
-            self.emit('save-status-changed', 'unsaved')
-            return False
+        file_path = self.active_file_path
+        
+        def run_save():
+            success = False
+            new_mtime = self.active_file_mtime
+            try:
+                front_matter = self._cached_front_matter.get(file_path) or "---\ntags: []\n---\n"
+                full_content = front_matter + content
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write(full_content)
+                new_mtime = os.path.getmtime(file_path)
+                success = True
+            except OSError as e:
+                print(f"Error saving note: {e}")
+
+            def on_main_thread():
+                if self.active_file_path == file_path:
+                    if success:
+                        self.active_file_mtime = new_mtime
+                        current_content = get_content_func() if get_content_func else content
+                        if current_content == content:
+                            self.dirty = False
+                            self.emit('save-status-changed', 'saved')
+                        else:
+                            self.emit('save-status-changed', 'unsaved')
+                        # Lightweight update: only refresh this row's title/mtime in sidebar
+                        new_title = self.get_display_title(file_path)
+                        self.emit('note-saved', file_path, new_title, new_mtime)
+                    else:
+                        self.emit('save-status-changed', 'unsaved')
+
+                if on_complete:
+                    on_complete(success)
+                return False
+
+            GLib.idle_add(on_main_thread)
+            
+        threading.Thread(target=run_save, daemon=True).start()
+        return True
 
     def handle_content_changed(self, get_content_func):
         """Schedule/trigger autosave if enabled when user types."""
@@ -327,7 +435,7 @@ class FileManager(GObject.Object):
         self._autosave_timer_id = None
         if self.active_file_path and self.dirty:
             content = get_content_func()
-            self.save_active_file(content)
+            self.save_active_file(content, get_content_func=get_content_func)
         return GLib.SOURCE_REMOVE
 
     def _on_root_monitor_changed(self, monitor, file, other_file, event_type):
@@ -358,7 +466,7 @@ class FileManager(GObject.Object):
                            Gio.FileMonitorEvent.MOVED_OUT):
             GLib.idle_add(self.emit, 'files-changed')
             
-        elif path == self.active_file_path and event_type in (Gio.FileMonitorEvent.CHANGES_DONE_HINT, Gio.FileMonitorEvent.CHANGED):
+        elif path == self.active_file_path and event_type == Gio.FileMonitorEvent.CHANGES_DONE_HINT:
             if not os.path.exists(path):
                 return
             try:
@@ -381,7 +489,8 @@ class FileManager(GObject.Object):
             
         if not self.dirty:
             self.active_file_mtime = new_mtime
-            self.emit('file-loaded', self.active_file_path, disk_content)
+            _, body = self._split_front_matter(disk_content)
+            self.emit('file-loaded', self.active_file_path, body)
         else:
             self.emit('external-change-detected', True)
 
@@ -507,19 +616,23 @@ def hello_world():
         """Update YAML front matter tags in the markdown file."""
         if not os.path.exists(file_path):
             return False
-            
+
+        # Sanitise tag values: strip characters that would break inline YAML
+        clean_tags = [t.replace(']', '').replace('[', '').replace('"', '').replace('\n', '').strip() for t in tags]
+        clean_tags = [t for t in clean_tags if t]
+
         try:
             with open(file_path, "r", encoding="utf-8") as f:
                 content = f.read()
-                
+
             lines = content.splitlines()
-            
+
             has_front_matter = False
             fm_end_index = -1
             tags_line_index = -1
-            
+
             if len(lines) > 0 and lines[0].strip() == "---":
-                for i in range(1, min(len(lines), 15)):
+                for i in range(1, min(len(lines), 50)):
                     line = lines[i].strip()
                     if line == "---":
                         has_front_matter = True
@@ -527,12 +640,12 @@ def hello_world():
                         break
                     if line.startswith("tags:"):
                         tags_line_index = i
-                        
-            tags_str = ", ".join(tags)
+
+            tags_str = ", ".join(clean_tags)
             new_tags_line = f"tags: [{tags_str}]"
-            
+
             self.cancel_autosave_timer()
-            
+
             if has_front_matter:
                 if tags_line_index != -1:
                     lines[tags_line_index] = new_tags_line
@@ -542,16 +655,26 @@ def hello_world():
                 lines.insert(0, "---")
                 lines.insert(1, new_tags_line)
                 lines.insert(2, "---")
-                
+
             new_content = "\n".join(lines) + "\n"
-            
+
             with open(file_path, "w", encoding="utf-8") as f:
                 f.write(new_content)
-                
-            self.active_file_mtime = os.path.getmtime(file_path)
-            
-            self.emit('files-changed')
-            self.emit('file-loaded', file_path, new_content)
+
+            new_mtime = os.path.getmtime(file_path)
+            if file_path == self.active_file_path:
+                self.active_file_mtime = new_mtime
+
+            # Update front matter cache so next body save uses the new tags
+            fm, _ = self._split_front_matter(new_content)
+            self._cached_front_matter[file_path] = fm
+
+            # Invalidate metadata cache so sidebar picks up new tags
+            if file_path in self._metadata_cache:
+                self._metadata_cache[file_path]['mtime'] = 0
+
+            if not self._suppress_files_changed:
+                self.emit('files-changed')
             return True
         except OSError as e:
             print(f"Error updating tags: {e}")
@@ -565,38 +688,30 @@ def hello_world():
             return False
             
         modified_any = False
-        active_modified = False
-        
-        for root, dirs, files in os.walk(self.notes_dir):
-            for filename in files:
-                if filename.endswith(".md"):
-                    path = os.path.join(root, filename)
-                    tags = self.get_tags_for_file(path)
-                    
-                    normalized_tags = [t.lower() for t in tags]
-                    if old_tag in normalized_tags:
-                        updated_tags = []
-                        for t in tags:
-                            if t.lower() == old_tag:
-                                if new_tag not in [ut.lower() for ut in updated_tags]:
-                                    updated_tags.append(new_tag)
-                            else:
-                                updated_tags.append(t)
-                                
-                        self.update_tags_for_file(path, updated_tags)
-                        modified_any = True
-                        if path == self.active_file_path:
-                            active_modified = True
-                            
+
+        self._suppress_files_changed = True
+        try:
+            for root, dirs, files in os.walk(self.notes_dir):
+                for filename in files:
+                    if filename.endswith(".md"):
+                        path = os.path.join(root, filename)
+                        tags = self.get_tags_for_file(path)
+                        normalized_tags = [t.lower() for t in tags]
+                        if old_tag in normalized_tags:
+                            updated_tags = []
+                            for t in tags:
+                                if t.lower() == old_tag:
+                                    if new_tag not in [ut.lower() for ut in updated_tags]:
+                                        updated_tags.append(new_tag)
+                                else:
+                                    updated_tags.append(t)
+                            self.update_tags_for_file(path, updated_tags)
+                            modified_any = True
+        finally:
+            self._suppress_files_changed = False
+
         if modified_any:
             self.emit('files-changed')
-            if active_modified and self.active_file_path:
-                try:
-                    with open(self.active_file_path, "r", encoding="utf-8") as f:
-                        content = f.read()
-                    self.emit('file-loaded', self.active_file_path, content)
-                except OSError:
-                    pass
         return modified_any
 
     def delete_tag_globally(self, tag_to_delete):
@@ -606,32 +721,97 @@ def hello_world():
             return False
             
         modified_any = False
-        active_modified = False
-        
-        for root, dirs, files in os.walk(self.notes_dir):
-            for filename in files:
-                if filename.endswith(".md"):
-                    path = os.path.join(root, filename)
-                    tags = self.get_tags_for_file(path)
-                    
-                    normalized_tags = [t.lower() for t in tags]
-                    if tag_to_delete in normalized_tags:
-                        updated_tags = [t for t in tags if t.lower() != tag_to_delete]
-                        self.update_tags_for_file(path, updated_tags)
-                        modified_any = True
-                        if path == self.active_file_path:
-                            active_modified = True
-                            
+
+        self._suppress_files_changed = True
+        try:
+            for root, dirs, files in os.walk(self.notes_dir):
+                for filename in files:
+                    if filename.endswith(".md"):
+                        path = os.path.join(root, filename)
+                        tags = self.get_tags_for_file(path)
+                        normalized_tags = [t.lower() for t in tags]
+                        if tag_to_delete in normalized_tags:
+                            updated_tags = [t for t in tags if t.lower() != tag_to_delete]
+                            self.update_tags_for_file(path, updated_tags)
+                            modified_any = True
+        finally:
+            self._suppress_files_changed = False
+
         if modified_any:
             self.emit('files-changed')
-            if active_modified and self.active_file_path:
-                try:
-                    with open(self.active_file_path, "r", encoding="utf-8") as f:
-                        content = f.read()
-                    self.emit('file-loaded', self.active_file_path, content)
-                except OSError:
-                    pass
         return modified_any
+
+    def pin_note(self, file_path, pinned):
+        """Set or clear pinned: true in YAML front matter."""
+        if not os.path.exists(file_path):
+            return False
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                content = f.read()
+
+            lines = content.splitlines()
+            has_front_matter = False
+            fm_end_index = -1
+            pinned_line_index = -1
+
+            if lines and lines[0].strip() == "---":
+                for i in range(1, min(len(lines), 50)):
+                    line = lines[i].strip()
+                    if line == "---":
+                        has_front_matter = True
+                        fm_end_index = i
+                        break
+                    if line.startswith("pinned:"):
+                        pinned_line_index = i
+
+            if has_front_matter:
+                if pinned:
+                    if pinned_line_index != -1:
+                        lines[pinned_line_index] = "pinned: true"
+                    else:
+                        lines.insert(fm_end_index, "pinned: true")
+                else:
+                    if pinned_line_index != -1:
+                        del lines[pinned_line_index]
+            elif pinned:
+                lines.insert(0, "---")
+                lines.insert(1, "pinned: true")
+                lines.insert(2, "---")
+
+            new_content = "\n".join(lines) + "\n"
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(new_content)
+
+            if file_path == self.active_file_path:
+                fm, _ = self._split_front_matter(new_content)
+                self._cached_front_matter[file_path] = fm
+                self.active_file_mtime = os.path.getmtime(file_path)
+            if file_path in self._metadata_cache:
+                self._metadata_cache[file_path]['mtime'] = 0  # invalidate
+
+            self.emit('files-changed')
+            return True
+        except OSError as e:
+            print(f"Error pinning note: {e}")
+            return False
+
+    def trigger_sync(self):
+        """Run rclone sync in a background thread. Emits sync-status-changed."""
+        import subprocess
+        from .config import RCLONE_SYNC_CMD
+        self.emit('sync-status-changed', 'syncing')
+
+        def run():
+            try:
+                result = subprocess.run(RCLONE_SYNC_CMD, timeout=120, capture_output=True)
+                status = 'done' if result.returncode == 0 else 'error'
+            except FileNotFoundError:
+                status = 'error'
+            except subprocess.TimeoutExpired:
+                status = 'error'
+            GLib.idle_add(self.emit, 'sync-status-changed', status)
+
+        threading.Thread(target=run, daemon=True).start()
 
     # --- Import / Export Core Methods ---
     def get_note_as_dict(self, file_path):
@@ -690,10 +870,15 @@ def hello_world():
     def import_note_from_markdown(self, src_path, target_notebook=None):
         """Import an external markdown file into the notes directory/notebook."""
         try:
+            # Validate notebook name against known notebooks
+            if target_notebook and target_notebook not in self.get_notebooks():
+                print(f"Refusing import to unknown notebook: {target_notebook}")
+                return False
+
             # Determine filename
             basename = os.path.basename(src_path)
             name, _ = os.path.splitext(basename)
-            
+
             # Destination path
             target_dir = self.notes_dir if not target_notebook else os.path.join(self.notes_dir, target_notebook)
             os.makedirs(target_dir, exist_ok=True)
@@ -715,13 +900,23 @@ def hello_world():
     def import_note_from_json(self, src_path, target_notebook=None):
         """Import a note from a JSON file."""
         try:
+            if os.path.getsize(src_path) > 10 * 1024 * 1024:  # 10 MB cap
+                print(f"Refusing oversized JSON import: {src_path}")
+                return False
+
+            if target_notebook and target_notebook not in self.get_notebooks():
+                print(f"Refusing import to unknown notebook: {target_notebook}")
+                return False
+
             with open(src_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-            
-            title = data.get("title", "Imported Note")
-            tags = data.get("tags", [])
-            content = data.get("content", "")
-            
+
+            if not isinstance(data, dict):
+                return False
+            title = str(data.get("title", "Imported Note"))
+            tags = [str(t) for t in data.get("tags", []) if isinstance(t, str)]
+            content = str(data.get("content", ""))
+
             target_dir = self.notes_dir if not target_notebook else os.path.join(self.notes_dir, target_notebook)
             os.makedirs(target_dir, exist_ok=True)
             
@@ -843,7 +1038,13 @@ def hello_world():
         try:
             with tempfile.TemporaryDirectory() as tmpdir:
                 with zipfile.ZipFile(src_path, 'r') as zipf:
-                    zipf.extractall(tmpdir)
+                    safe_root = os.path.realpath(tmpdir)
+                    for member in zipf.infolist():
+                        dest = os.path.realpath(os.path.join(safe_root, member.filename))
+                        if not dest.startswith(safe_root + os.sep):
+                            print(f"Skipping unsafe zip entry: {member.filename}")
+                            continue
+                        zipf.extract(member, tmpdir)
                 
                 # Walk extracted files and import them
                 imported_any = False
@@ -869,6 +1070,10 @@ def hello_world():
     def import_project_from_json(self, src_path):
         """Restore all notebooks and notes from a single JSON project backup."""
         try:
+            if os.path.getsize(src_path) > 50 * 1024 * 1024:  # 50 MB cap
+                print(f"Refusing oversized project JSON import: {src_path}")
+                return False
+
             with open(src_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             
