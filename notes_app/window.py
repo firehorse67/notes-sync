@@ -383,6 +383,7 @@ class MainWindow(Adw.ApplicationWindow):
             .chat-bubble-user {
                 background-color: #3b82f6;
                 color: #ffffff;
+                padding: 10px 14px;
                 border-radius: 12px 12px 2px 12px;
                 margin-left: 20px;
                 box-shadow: 0 1px 2px rgba(0,0,0,0.1);
@@ -394,6 +395,7 @@ class MainWindow(Adw.ApplicationWindow):
                 background-color: @card_bg_color;
                 border: 1px solid rgba(0, 0, 0, 0.05);
                 color: @card_fg_color;
+                padding: 10px 14px;
                 border-radius: 12px 12px 12px 2px;
                 margin-right: 20px;
                 box-shadow: 0 1px 2px rgba(0,0,0,0.05);
@@ -908,11 +910,7 @@ class MainWindow(Adw.ApplicationWindow):
         label.set_wrap(True)
         label.set_xalign(0.0)
         label.set_max_width_chars(35)
-        label.set_selectable(True)
-        label.set_margin_start(14)
-        label.set_margin_end(14)
-        label.set_margin_top(10)
-        label.set_margin_bottom(10)
+        label.set_selectable(False)
         
         bubble = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         bubble.append(label)
@@ -979,15 +977,37 @@ class MainWindow(Adw.ApplicationWindow):
                     note_dir = os.path.dirname(self.file_manager.active_file_path)
                     pdf_path = os.path.join(note_dir, att["src"])
                     break
+                    
+        # Gather note count and notes list recursively
+        total_notes = 0
+        notes_list = []
+        try:
+            for root_dir, dirs, files in os.walk(self.file_manager.notes_dir):
+                for file in files:
+                    if file.endswith(".md"):
+                        total_notes += 1
+                        rel_dir = os.path.relpath(root_dir, self.file_manager.notes_dir)
+                        notebook = "" if rel_dir == "." else rel_dir
+                        note_title = file[:-3]
+                        if notebook:
+                            notes_list.append(f"- [{notebook}] {note_title}")
+                        else:
+                            notes_list.append(f"- {note_title}")
+        except Exception:
+            pass
+            
+        workspace_info = f"Total Notes in Workspace: {total_notes}\n"
+        if notes_list:
+            workspace_info += "Available Notes:\n" + "\n".join(notes_list)
         
         thread = threading.Thread(
             target=self._ai_query_worker,
-            args=(prompt, use_gemini, pdf_path, thinking_bubble_box, ai_enabled)
+            args=(prompt, use_gemini, pdf_path, thinking_bubble_box, ai_enabled, workspace_info)
         )
         thread.daemon = True
         thread.start()
 
-    def _ai_query_worker(self, prompt, use_gemini, pdf_path, thinking_bubble_box, ai_enabled):
+    def _ai_query_worker(self, prompt, use_gemini, pdf_path, thinking_bubble_box, ai_enabled, workspace_info):
         config = load_local_config()
         active_content = None
         
@@ -1015,7 +1035,7 @@ class MainWindow(Adw.ApplicationWindow):
                 api_key = config.get("deepseek_api_key", "").strip()
                 if not api_key:
                     raise ValueError("DeepSeek API key is not configured in Settings.")
-                response_text = call_deepseek_api(api_key, prompt, note_content=active_content)
+                response_text = call_deepseek_api(api_key, prompt, note_content=active_content, workspace_info=workspace_info)
         except Exception as e:
             response_text = f"Error: {e}"
             
