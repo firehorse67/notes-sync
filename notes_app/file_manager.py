@@ -815,31 +815,32 @@ def hello_world():
 
     # --- Import / Export Core Methods ---
     def get_note_as_dict(self, file_path):
-        """Read a note and return its content and tags as a dictionary."""
+        """Return interchange-format dict: title, content (markdown), tags, pinned, notebook."""
         try:
             if not os.path.exists(file_path):
                 return None
-                
+
             with open(file_path, "r", encoding="utf-8") as f:
                 lines = f.readlines()
-                
+
             content_start_line = 0
-            if len(lines) > 0 and lines[0].strip() == "---":
+            if lines and lines[0].strip() == "---":
                 for i in range(1, len(lines)):
                     if lines[i].strip() == "---":
                         content_start_line = i + 1
                         break
-                        
+
             content = "".join(lines[content_start_line:])
-            tags = self.get_tags_for_file(file_path)
+            meta = self._get_front_matter_metadata(file_path)
             title = self.get_display_title(file_path)
-            # Relative path to keep structure
-            rel_path = os.path.relpath(file_path, self.notes_dir)
+            rel_dir = os.path.dirname(os.path.relpath(file_path, self.notes_dir))
+            notebook = "" if rel_dir == "." else rel_dir
             return {
                 "title": title,
-                "tags": tags,
                 "content": content,
-                "relative_path": rel_path
+                "tags": meta['tags'],
+                "pinned": meta['pinned'],
+                "notebook": notebook,
             }
         except Exception as e:
             print(f"Error reading note as dict {file_path}: {e}")
@@ -856,12 +857,12 @@ def hello_world():
             return False
 
     def export_note_to_json(self, note_path, dest_path):
-        """Serialize a note's metadata and content to a JSON file."""
+        """Serialize a note to a versioned interchange JSON file."""
         try:
             data = self.get_note_as_dict(note_path)
             if data:
                 with open(dest_path, 'w', encoding='utf-8') as f:
-                    json.dump(data, f, indent=4, ensure_ascii=False)
+                    json.dump({"version": 1, "notes": [data]}, f, indent=4, ensure_ascii=False)
                 return True
         except Exception as e:
             print(f"Error exporting note to json: {e}")
@@ -897,50 +898,86 @@ def hello_world():
             print(f"Error importing markdown note: {e}")
             return False
 
-    def import_note_from_json(self, src_path, target_notebook=None):
-        """Import a note from a JSON file."""
+    def _write_imported_note(self, note_data, notebook_name):
+        """Write one note dict to disk. notebook_name=None → root; str → that notebook (created if needed)."""
         try:
-            if os.path.getsize(src_path) > 10 * 1024 * 1024:  # 10 MB cap
-                print(f"Refusing oversized JSON import: {src_path}")
-                return False
+            title = str(note_data.get("title", "Imported Note"))
+            tags = [str(t) for t in note_data.get("tags", []) if isinstance(t, str)]
+            content = str(note_data.get("content", ""))
+            pinned = bool(note_data.get("pinned", False))
 
-            if target_notebook and target_notebook not in self.get_notebooks():
-                print(f"Refusing import to unknown notebook: {target_notebook}")
-                return False
+            if notebook_name:
+                nb_path = os.path.join(self.notes_dir, notebook_name)
+                os.makedirs(nb_path, exist_ok=True)
 
-            with open(src_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-
-            if not isinstance(data, dict):
-                return False
-            title = str(data.get("title", "Imported Note"))
-            tags = [str(t) for t in data.get("tags", []) if isinstance(t, str)]
-            content = str(data.get("content", ""))
-
-            target_dir = self.notes_dir if not target_notebook else os.path.join(self.notes_dir, target_notebook)
-            os.makedirs(target_dir, exist_ok=True)
-            
-            # Find unique file path
-            safe_title = "".join(c for c in title if c.isalnum() or c in (' ', '_', '-')).strip()
-            if not safe_title:
-                safe_title = "Imported Note"
+            target_dir = self.notes_dir if not notebook_name else os.path.join(self.notes_dir, notebook_name)
+            safe_title = "".join(c for c in title if c.isalnum() or c in (' ', '_', '-')).strip() or "Imported Note"
             dest_path = os.path.join(target_dir, f"{safe_title}.md")
             counter = 1
             while os.path.exists(dest_path):
                 dest_path = os.path.join(target_dir, f"{safe_title}_{counter}.md")
                 counter += 1
-                
-            # Write note markdown file
+
             with open(dest_path, 'w', encoding='utf-8') as f:
-                # Write front matter if tags present
-                if tags:
-                    f.write("---\n")
-                    f.write(f"tags: [{', '.join(tags)}]\n")
-                    f.write("---\n")
+                fm = ["---", f"tags: [{', '.join(tags)}]"]
+                if pinned:
+                    fm.append("pinned: true")
+                fm.append("---")
+                f.write("\n".join(fm) + "\n")
                 f.write(content)
-                
-            self.emit('files-changed')
             return True
+        except Exception as e:
+            print(f"Error writing imported note: {e}")
+            return False
+
+    def import_note_from_json(self, src_path, target_notebook=None):
+        """Import notes from a JSON file.
+
+        Handles three formats:
+        - Versioned interchange:  {"version": 1, "notes": [...]}  — each note's "notebook" field
+          is used to place it unless the user explicitly chose a notebook (target_notebook != None).
+        - Array:                  [{title, content, tags, ...}, ...]
+        - Single-note dict:       {title, content, tags, ...}
+        """
+        try:
+            if os.path.getsize(src_path) > 10 * 1024 * 1024:
+                print(f"Refusing oversized JSON import: {src_path}")
+                return False
+
+            with open(src_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+
+            is_interchange = isinstance(data, dict) and isinstance(data.get('notes'), list) and 'version' in data
+
+            if is_interchange:
+                notes_list = data['notes']
+            elif isinstance(data, dict):
+                notes_list = [data]
+            elif isinstance(data, list):
+                notes_list = data
+            else:
+                return False
+
+            imported_any = False
+            for note_data in notes_list:
+                if not isinstance(note_data, dict):
+                    continue
+                # Interchange format auto-routes by notebook; explicit target_notebook overrides.
+                if target_notebook is not None or not is_interchange:
+                    nb = target_notebook
+                else:
+                    raw_nb = note_data.get("notebook", "")
+                    if raw_nb and isinstance(raw_nb, str):
+                        safe_nb = "".join(c for c in raw_nb if c.isalnum() or c in (' ', '_', '-')).strip()
+                        nb = safe_nb or None
+                    else:
+                        nb = None
+                if self._write_imported_note(note_data, nb):
+                    imported_any = True
+
+            if imported_any:
+                self.emit('files-changed')
+            return imported_any
         except Exception as e:
             print(f"Error importing json note: {e}")
             return False
@@ -963,11 +1000,18 @@ def hello_world():
             return False
 
     def export_notebook_to_json(self, notebook_name, dest_path):
-        """Export all notes in a single notebook to a single JSON archive."""
+        """Export all notes in a notebook to a versioned interchange JSON file."""
         try:
-            data = self.get_notebook_as_dict(notebook_name)
+            notebook_dir = self.notes_dir if not notebook_name else os.path.join(self.notes_dir, notebook_name)
+            notes = []
+            if os.path.exists(notebook_dir):
+                for file in sorted(os.listdir(notebook_dir)):
+                    if file.endswith('.md'):
+                        note_data = self.get_note_as_dict(os.path.join(notebook_dir, file))
+                        if note_data:
+                            notes.append(note_data)
             with open(dest_path, 'w', encoding='utf-8') as f:
-                json.dump(data, f, indent=4, ensure_ascii=False)
+                json.dump({"version": 1, "notes": notes}, f, indent=4, ensure_ascii=False)
             return True
         except Exception as e:
             print(f"Error exporting notebook to json: {e}")
@@ -1068,57 +1112,43 @@ def hello_world():
             return False
 
     def import_project_from_json(self, src_path):
-        """Restore all notebooks and notes from a single JSON project backup."""
+        """Restore all notebooks and notes from a JSON project backup or interchange file."""
         try:
-            if os.path.getsize(src_path) > 50 * 1024 * 1024:  # 50 MB cap
+            if os.path.getsize(src_path) > 50 * 1024 * 1024:
                 print(f"Refusing oversized project JSON import: {src_path}")
                 return False
 
             with open(src_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-            
-            imported_any = False
-            
-            # Helper to write a note dict
-            def import_dict_note(note_data, notebook_name):
-                title = note_data.get("title", "Imported Note")
-                tags = note_data.get("tags", [])
-                content = note_data.get("content", "")
-                
-                target_dir = self.notes_dir if not notebook_name else os.path.join(self.notes_dir, notebook_name)
-                os.makedirs(target_dir, exist_ok=True)
-                
-                safe_title = "".join(c for c in title if c.isalnum() or c in (' ', '_', '-')).strip()
-                if not safe_title:
-                    safe_title = "Imported Note"
-                dest_path = os.path.join(target_dir, f"{safe_title}.md")
-                counter = 1
-                while os.path.exists(dest_path):
-                    dest_path = os.path.join(target_dir, f"{safe_title}_{counter}.md")
-                    counter += 1
-                
-                with open(dest_path, 'w', encoding='utf-8') as nf:
-                    if tags:
-                        nf.write("---\n")
-                        nf.write(f"tags: [{', '.join(tags)}]\n")
-                        nf.write("---\n")
-                    nf.write(content)
-                return True
 
-            # Import root notes
-            for note_data in data.get("root_notes", []):
-                if import_dict_note(note_data, None):
-                    imported_any = True
-                    
-            # Import notebooks
-            for notebook_data in data.get("notebooks", []):
-                notebook_name = notebook_data.get("notebook")
-                if notebook_name == "Root":
-                    notebook_name = None
-                for note_data in notebook_data.get("notes", []):
-                    if import_dict_note(note_data, notebook_name):
+            imported_any = False
+
+            # Versioned interchange format: {"version": 1, "notes": [...]}
+            if isinstance(data, dict) and isinstance(data.get('notes'), list):
+                for note_data in data['notes']:
+                    if not isinstance(note_data, dict):
+                        continue
+                    raw_nb = note_data.get("notebook", "")
+                    nb = None
+                    if raw_nb and isinstance(raw_nb, str):
+                        safe_nb = "".join(c for c in raw_nb if c.isalnum() or c in (' ', '_', '-')).strip()
+                        nb = safe_nb or None
+                    if self._write_imported_note(note_data, nb):
                         imported_any = True
-                        
+
+            # Legacy project backup: {"root_notes": [...], "notebooks": [...]}
+            elif isinstance(data, dict):
+                for note_data in data.get("root_notes", []):
+                    if isinstance(note_data, dict) and self._write_imported_note(note_data, None):
+                        imported_any = True
+                for notebook_data in data.get("notebooks", []):
+                    nb_name = notebook_data.get("notebook")
+                    if nb_name == "Root":
+                        nb_name = None
+                    for note_data in notebook_data.get("notes", []):
+                        if isinstance(note_data, dict) and self._write_imported_note(note_data, nb_name):
+                            imported_any = True
+
             if imported_any:
                 self.emit('notebooks-changed')
                 self.emit('files-changed')
