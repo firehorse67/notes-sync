@@ -4,7 +4,57 @@ gi.require_version('Adw', '1')
 from gi.repository import Gtk, Adw, Gio, GLib, GObject, Gdk
 from .sidebar import SidebarView
 from .editor import MarkdownEditor
+from .config import load_local_config, save_local_config
 import os
+
+class SettingsDialog(Adw.PreferencesWindow):
+    def __init__(self, parent):
+        super().__init__(transient_for=parent, modal=True)
+        self.set_title("Preferences")
+        self.set_default_size(480, 300)
+        
+        self.config = load_local_config()
+        
+        page = Adw.PreferencesPage()
+        self.add(page)
+        
+        group = Adw.PreferencesGroup(title="AI Assistant Configuration")
+        page.add(group)
+        
+        # Provider Selection
+        self.provider_row = Adw.ComboRow(title="Active AI Provider")
+        provider_model = Gtk.StringList.new(["Disabled", "Gemini", "DeepSeek"])
+        self.provider_row.set_model(provider_model)
+        
+        curr_provider = self.config.get("ai_provider", "Disabled")
+        provider_indices = {"Disabled": 0, "Gemini": 1, "DeepSeek": 2}
+        self.provider_row.set_selected(provider_indices.get(curr_provider, 0))
+        group.add(self.provider_row)
+        
+        # Gemini API Key Row
+        self.gemini_key_row = Adw.EntryRow(title="Gemini API Key")
+        self.gemini_key_row.set_text(self.config.get("gemini_api_key", ""))
+        self.gemini_key_row.set_visibility(False)
+        group.add(self.gemini_key_row)
+        
+        # DeepSeek API Key Row
+        self.deepseek_key_row = Adw.EntryRow(title="DeepSeek API Key")
+        self.deepseek_key_row.set_text(self.config.get("deepseek_api_key", ""))
+        self.deepseek_key_row.set_visibility(False)
+        group.add(self.deepseek_key_row)
+        
+        self.connect("close-request", self._on_close_request)
+        
+    def _on_close_request(self, window):
+        selected_idx = self.provider_row.get_selected()
+        providers = ["Disabled", "Gemini", "DeepSeek"]
+        self.config["ai_provider"] = providers[selected_idx]
+        self.config["gemini_api_key"] = self.gemini_key_row.get_text().strip()
+        self.config["deepseek_api_key"] = self.deepseek_key_row.get_text().strip()
+        
+        save_local_config(self.config)
+        return False
+
 
 class EditTagsDialog(Gtk.Dialog):
     def __init__(self, parent, current_tags):
@@ -182,6 +232,12 @@ class MainWindow(Adw.ApplicationWindow):
         self.sync_button.set_tooltip_text("Sync with Google Drive")
         self.sync_button.connect("clicked", self._on_sync_clicked)
         self.content_header.pack_start(self.sync_button)
+
+        # Settings button
+        self.settings_button = Gtk.Button.new_from_icon_name("preferences-system-symbolic")
+        self.settings_button.set_tooltip_text("Preferences")
+        self.settings_button.connect("clicked", self._on_settings_clicked)
+        self.content_header.pack_start(self.settings_button)
         
         # External modification banner
         self.banner = Adw.Banner()
@@ -532,6 +588,10 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _on_sync_clicked(self, button):
         self.file_manager.trigger_sync()
+
+    def _on_settings_clicked(self, button):
+        dialog = SettingsDialog(self)
+        dialog.present()
 
     def _on_sync_status_changed(self, file_manager, status):
         if status == 'syncing':
