@@ -859,7 +859,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.ai_panel.append(self.chat_scrolled)
         
         # Add welcome message
-        self._add_chat_message("assistant", "Hello! I am your AI notes assistant. Ask me anything about your notes, or attach a PDF to let Gemini read it!")
+        self._add_chat_message("assistant", "Hello, I am your AI notes assistant. Ask me anything about your notes.")
         
         # 3. Attachment context area
         self.attachment_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
@@ -969,7 +969,10 @@ class MainWindow(Adw.ApplicationWindow):
         
         thinking_bubble_box = self._add_chat_message("assistant", "Thinking...")
         
-        use_gemini = self.attachment_checkbox.get_active()
+        config = load_local_config()
+        active_provider = config.get("ai_provider", "Disabled")
+        
+        use_gemini = self.attachment_checkbox.get_active() or (active_provider == "Gemini")
         pdf_path = None
         
         if use_gemini and self.file_manager.active_file_path and hasattr(self.editor, "_attachments"):
@@ -981,12 +984,12 @@ class MainWindow(Adw.ApplicationWindow):
         
         thread = threading.Thread(
             target=self._ai_query_worker,
-            args=(prompt, use_gemini, pdf_path, thinking_bubble_box)
+            args=(prompt, use_gemini, pdf_path, thinking_bubble_box, active_provider)
         )
         thread.daemon = True
         thread.start()
 
-    def _ai_query_worker(self, prompt, use_gemini, pdf_path, thinking_bubble_box):
+    def _ai_query_worker(self, prompt, use_gemini, pdf_path, thinking_bubble_box, active_provider):
         config = load_local_config()
         active_content = None
         
@@ -1002,6 +1005,9 @@ class MainWindow(Adw.ApplicationWindow):
         time.sleep(0.1)
         
         try:
+            if active_provider == "Disabled" and not use_gemini:
+                raise ValueError("AI Assistant is disabled in Settings.")
+                
             if use_gemini:
                 api_key = config.get("gemini_api_key", "").strip()
                 if not api_key:
