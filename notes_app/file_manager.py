@@ -46,6 +46,34 @@ class FileManager(GObject.Object):
         
         # Generate default Markdown Tips note
         self._ensure_markdown_tips_note()
+        self.build_search_index_async()
+
+    def build_search_index_async(self):
+        """Index all notes recursively in a background thread."""
+        def index_worker():
+            if not os.path.exists(self.notes_dir):
+                return
+            try:
+                for root, dirs, files in os.walk(self.notes_dir):
+                    # Skip hidden directories
+                    dirs[:] = [d for d in dirs if not d.startswith('.')]
+                    for file in files:
+                        if file.endswith(".md"):
+                            path = os.path.join(root, file)
+                            try:
+                                mtime = os.path.getmtime(path)
+                                cached = self._content_index.get(path)
+                                if cached and cached['mtime'] == mtime:
+                                    continue
+                                with open(path, "r", encoding="utf-8") as f:
+                                    content = f.read()
+                                _, body = self._split_front_matter(content)
+                                self._content_index[path] = {'mtime': mtime, 'text': body.lower()}
+                            except OSError:
+                                continue
+            except Exception as e:
+                print(f"Error indexing notes: {e}")
+        threading.Thread(target=index_worker, daemon=True).start()
 
     def _split_front_matter(self, raw_content):
         """Splits raw note content into (front_matter_str, body_str)."""
@@ -82,6 +110,7 @@ class FileManager(GObject.Object):
         # notebook=None means Root
         self.active_notebook = notebook
         self._update_active_monitor()
+        self.build_search_index_async()
         self.emit('files-changed')
 
     def get_notebooks(self):
@@ -379,10 +408,20 @@ class FileManager(GObject.Object):
             try:
                 front_matter = self._cached_front_matter.get(file_path) or "---\ntags: []\n---\n"
                 full_content = front_matter + content
-                with open(file_path, "w", encoding="utf-8") as f:
-                    f.write(full_content)
+                
+                # Atomic save
+                temp_fd, temp_path = tempfile.mkstemp(dir=os.path.dirname(file_path), prefix=".tmp_")
+                try:
+                    with os.fdopen(temp_fd, 'w', encoding='utf-8') as f:
+                        f.write(full_content)
+                    os.replace(temp_path, file_path)
+                    success = True
+                except Exception as e:
+                    if os.path.exists(temp_path):
+                        os.remove(temp_path)
+                    raise e
+                
                 new_mtime = os.path.getmtime(file_path)
-                success = True
             except OSError as e:
                 print(f"Error saving note: {e}")
 
@@ -390,6 +429,7 @@ class FileManager(GObject.Object):
                 if self.active_file_path == file_path:
                     if success:
                         self.active_file_mtime = new_mtime
+                        self._content_index[file_path] = {'mtime': new_mtime, 'text': content.lower()}
                         current_content = get_content_func() if get_content_func else content
                         if current_content == content:
                             self.dirty = False
@@ -1323,6 +1363,17 @@ def hello_world():
                 # Walk extracted files and import them
                 imported_any = False
                 for root, dirs, files in os.walk(tmpdir):
+                    # Copy attachment subdirectories
+                    if os.path.basename(root) == ".attachments":
+                        rel_dir = os.path.relpath(os.path.dirname(root), tmpdir)
+                        notebook_target = None if rel_dir == '.' else rel_dir
+                        dest_dir = self.notes_dir if not notebook_target else os.path.join(self.notes_dir, notebook_target)
+                        dest_attachments = os.path.join(dest_dir, ".attachments")
+                        os.makedirs(dest_attachments, exist_ok=True)
+                        for file in files:
+                            shutil.copy2(os.path.join(root, file), os.path.join(dest_attachments, file))
+                        continue
+
                     for file in files:
                         if file.endswith('.md'):
                             # Figure out relative notebook path
