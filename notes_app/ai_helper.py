@@ -28,7 +28,13 @@ def call_gemini_api(api_key, prompt, pdf_path=None):
     }
     
     response = requests.post(url, json=payload, headers=headers, timeout=45)
-    response.raise_for_status()
+    if response.status_code != 200:
+        try:
+            err_json = response.json()
+            err_msg = err_json["error"]["message"]
+            raise ValueError(err_msg)
+        except Exception:
+            response.raise_for_status()
     res_data = response.json()
     
     try:
@@ -57,7 +63,13 @@ def call_deepseek_api(api_key, prompt, note_content=None):
     }
     
     response = requests.post(url, json=payload, headers=headers, timeout=45)
-    response.raise_for_status()
+    if response.status_code != 200:
+        try:
+            err_json = response.json()
+            err_msg = err_json["error"]["message"]
+            raise ValueError(err_msg)
+        except Exception:
+            response.raise_for_status()
     res_data = response.json()
     
     try:
