@@ -383,7 +383,6 @@ class MainWindow(Adw.ApplicationWindow):
             .chat-bubble-user {
                 background-color: #3b82f6;
                 color: #ffffff;
-                padding: 10px 14px;
                 border-radius: 12px 12px 2px 12px;
                 margin-left: 20px;
                 box-shadow: 0 1px 2px rgba(0,0,0,0.1);
@@ -395,7 +394,6 @@ class MainWindow(Adw.ApplicationWindow):
                 background-color: @card_bg_color;
                 border: 1px solid rgba(0, 0, 0, 0.05);
                 color: @card_fg_color;
-                padding: 10px 14px;
                 border-radius: 12px 12px 12px 2px;
                 margin-right: 20px;
                 box-shadow: 0 1px 2px rgba(0,0,0,0.05);
@@ -911,6 +909,10 @@ class MainWindow(Adw.ApplicationWindow):
         label.set_xalign(0.0)
         label.set_max_width_chars(35)
         label.set_selectable(False)
+        label.set_margin_start(14)
+        label.set_margin_end(14)
+        label.set_margin_top(10)
+        label.set_margin_bottom(10)
         
         bubble = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         bubble.append(label)
