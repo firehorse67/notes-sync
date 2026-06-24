@@ -136,7 +136,8 @@ class MainWindow(Adw.ApplicationWindow):
         sidebar_header.pack_start(self.sync_button)
 
         # AI Toggle button (sidebar header)
-        self.ai_toggle_button = Gtk.ToggleButton.new_from_icon_name("face-smile-symbolic")
+        self.ai_toggle_button = Gtk.ToggleButton()
+        self.ai_toggle_button.set_icon_name("face-smile-symbolic")
         self.ai_toggle_button.set_tooltip_text("AI Assistant")
         self.ai_toggle_button.connect("toggled", self._on_ai_toggle_toggled)
         sidebar_header.pack_start(self.ai_toggle_button)
@@ -815,7 +816,7 @@ class MainWindow(Adw.ApplicationWindow):
     def _build_ai_panel(self):
         self.ai_panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         self.ai_panel.get_style_context().add_class("ai-panel")
-        self.ai_panel.set_width_request(320)
+        self.ai_panel.set_size_request(320, -1)
         self.ai_panel.set_visible(False)
         
         # 1. Header
