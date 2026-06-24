@@ -23,15 +23,11 @@ class SettingsDialog(Adw.PreferencesWindow):
         group = Adw.PreferencesGroup(title="AI Assistant Configuration")
         page.add(group)
         
-        # Provider Selection
-        self.provider_row = Adw.ComboRow(title="Active AI Provider")
-        provider_model = Gtk.StringList.new(["Disabled", "Gemini", "DeepSeek"])
-        self.provider_row.set_model(provider_model)
-        
+        # Enable AI Assistant Switch
+        self.ai_enabled_row = Adw.SwitchRow(title="Enable AI Assistant")
         curr_provider = self.config.get("ai_provider", "Disabled")
-        provider_indices = {"Disabled": 0, "Gemini": 1, "DeepSeek": 2}
-        self.provider_row.set_selected(provider_indices.get(curr_provider, 0))
-        group.add(self.provider_row)
+        self.ai_enabled_row.set_active(self.config.get("ai_enabled", True) and (curr_provider != "Disabled"))
+        group.add(self.ai_enabled_row)
         
         # Gemini API Key Row
         self.gemini_key_row = Adw.PasswordEntryRow(title="Gemini API Key")
@@ -46,9 +42,9 @@ class SettingsDialog(Adw.PreferencesWindow):
         self.connect("close-request", self._on_close_request)
         
     def _on_close_request(self, window):
-        selected_idx = self.provider_row.get_selected()
-        providers = ["Disabled", "Gemini", "DeepSeek"]
-        self.config["ai_provider"] = providers[selected_idx]
+        is_active = self.ai_enabled_row.get_active()
+        self.config["ai_enabled"] = is_active
+        self.config["ai_provider"] = "Enabled" if is_active else "Disabled"
         self.config["gemini_api_key"] = self.gemini_key_row.get_text().strip()
         self.config["deepseek_api_key"] = self.deepseek_key_row.get_text().strip()
         
@@ -393,7 +389,6 @@ class MainWindow(Adw.ApplicationWindow):
             }
             .chat-bubble-user label {
                 color: #ffffff;
-                padding: 10px 14px;
             }
             .chat-bubble-assistant {
                 background-color: @card_bg_color;
@@ -402,9 +397,6 @@ class MainWindow(Adw.ApplicationWindow):
                 border-radius: 12px 12px 12px 2px;
                 margin-right: 20px;
                 box-shadow: 0 1px 2px rgba(0,0,0,0.05);
-            }
-            .chat-bubble-assistant label {
-                padding: 10px 14px;
             }
         """)
         Gtk.StyleContext.add_provider_for_display(
@@ -917,6 +909,10 @@ class MainWindow(Adw.ApplicationWindow):
         label.set_xalign(0.0)
         label.set_max_width_chars(35)
         label.set_selectable(True)
+        label.set_margin_start(14)
+        label.set_margin_end(14)
+        label.set_margin_top(10)
+        label.set_margin_bottom(10)
         
         bubble = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         bubble.append(label)
@@ -972,9 +968,9 @@ class MainWindow(Adw.ApplicationWindow):
         thinking_bubble_box = self._add_chat_message("assistant", "Thinking...")
         
         config = load_local_config()
-        active_provider = config.get("ai_provider", "Disabled")
+        ai_enabled = config.get("ai_enabled", True) and (config.get("ai_provider", "Disabled") != "Disabled")
         
-        use_gemini = self.attachment_checkbox.get_active() or (active_provider == "Gemini")
+        use_gemini = self.attachment_checkbox.get_active()
         pdf_path = None
         
         if use_gemini and self.file_manager.active_file_path and hasattr(self.editor, "_attachments"):
@@ -986,12 +982,12 @@ class MainWindow(Adw.ApplicationWindow):
         
         thread = threading.Thread(
             target=self._ai_query_worker,
-            args=(prompt, use_gemini, pdf_path, thinking_bubble_box, active_provider)
+            args=(prompt, use_gemini, pdf_path, thinking_bubble_box, ai_enabled)
         )
         thread.daemon = True
         thread.start()
 
-    def _ai_query_worker(self, prompt, use_gemini, pdf_path, thinking_bubble_box, active_provider):
+    def _ai_query_worker(self, prompt, use_gemini, pdf_path, thinking_bubble_box, ai_enabled):
         config = load_local_config()
         active_content = None
         
@@ -1007,7 +1003,7 @@ class MainWindow(Adw.ApplicationWindow):
         time.sleep(0.1)
         
         try:
-            if active_provider == "Disabled" and not use_gemini:
+            if not ai_enabled:
                 raise ValueError("AI Assistant is disabled in Settings.")
                 
             if use_gemini:
