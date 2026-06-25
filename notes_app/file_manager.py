@@ -33,6 +33,9 @@ class FileManager(GObject.Object):
         self._cached_front_matter = {}   # path -> front_matter_str; avoids re-read on every save
         self._suppress_files_changed = False  # batches signal during global tag ops
         self._content_index = {}         # path -> {mtime, text} for full-text search
+        self._files_changed_debounce_id = None   # debounce rapid file-monitor events
+        self._notebooks_changed_pending = False  # guard against idle_add flood in root monitor
+        self._ext_change_timer_id = None         # debounce CHANGES_DONE_HINT events
         
         # Dual monitors: 
         # 1. Root monitor for tracking notebooks (subdirs)
@@ -483,15 +486,40 @@ class FileManager(GObject.Object):
         path = file.get_path()
         if not path:
             return
-            
-        # If folder created/deleted under notes_dir, notify notebooks change
-        if event_type in (Gio.FileMonitorEvent.CREATED, 
-                           Gio.FileMonitorEvent.DELETED, 
+        # Skip atomic-save temp files — their DELETED events would otherwise flood
+        # GLib.idle_add with 'notebooks-changed' callbacks on every autosave/rclone write.
+        if os.path.basename(path).startswith('.tmp_'):
+            return
+
+        if event_type in (Gio.FileMonitorEvent.CREATED,
+                           Gio.FileMonitorEvent.DELETED,
                            Gio.FileMonitorEvent.MOVED,
                            Gio.FileMonitorEvent.MOVED_IN,
                            Gio.FileMonitorEvent.MOVED_OUT):
             if os.path.isdir(path) or event_type == Gio.FileMonitorEvent.DELETED:
-                GLib.idle_add(self.emit, 'notebooks-changed')
+                # Guard: only queue one idle callback at a time.  On FUSE mounts (rclone)
+                # DELETED events flood in; without this guard every event queued another
+                # idle_add → notebooks-changed → os.listdir() on FUSE → memory explosion.
+                if not self._notebooks_changed_pending:
+                    self._notebooks_changed_pending = True
+                    GLib.idle_add(self._emit_notebooks_changed)
+
+    def _emit_notebooks_changed(self):
+        self._notebooks_changed_pending = False
+        self.emit('notebooks-changed')
+        return GLib.SOURCE_REMOVE
+
+    def _schedule_files_changed(self):
+        """Debounced files-changed emitter — coalesces rapid monitor events into one signal."""
+        if self._files_changed_debounce_id is not None:
+            GLib.source_remove(self._files_changed_debounce_id)
+        self._files_changed_debounce_id = GLib.timeout_add(250, self._emit_files_changed_debounced)
+
+    def _emit_files_changed_debounced(self):
+        self._files_changed_debounce_id = None
+        if not self._suppress_files_changed:
+            self.emit('files-changed')
+        return GLib.SOURCE_REMOVE
 
     def _on_active_monitor_changed(self, monitor, file, other_file, event_type):
         """Active monitor detects changes to notes within active notebook."""
@@ -499,29 +527,59 @@ class FileManager(GObject.Object):
         if not path:
             return
 
-        if event_type in (Gio.FileMonitorEvent.CREATED, 
-                           Gio.FileMonitorEvent.DELETED, 
+        # Ignore atomic-save temp files — they trigger spurious events on every autosave
+        if os.path.basename(path).startswith('.tmp_'):
+            return
+
+        if event_type in (Gio.FileMonitorEvent.CREATED,
+                           Gio.FileMonitorEvent.DELETED,
                            Gio.FileMonitorEvent.MOVED,
                            Gio.FileMonitorEvent.MOVED_IN,
                            Gio.FileMonitorEvent.MOVED_OUT):
-            GLib.idle_add(self.emit, 'files-changed')
-            
-        elif path == self.active_file_path and event_type == Gio.FileMonitorEvent.CHANGES_DONE_HINT:
-            if not os.path.exists(path):
-                return
-            try:
-                new_mtime = os.path.getmtime(path)
-            except OSError:
-                return
+            # Only schedule the debounce timer if one isn't already pending.
+            # On FUSE mounts (rclone) events flood in at very high rates. Cancelling
+            # and recreating the timer on every event (source_remove + timeout_add)
+            # causes thousands of GLib heap allocations per second → GiB RAM growth
+            # and sustained high CPU. The first event in any burst arms the timer;
+            # subsequent events are a free no-op until the timer fires and resets it.
+            if self._files_changed_debounce_id is None:
+                self._schedule_files_changed()
 
-            if new_mtime > self.active_file_mtime:
+        elif path == self.active_file_path and event_type == Gio.FileMonitorEvent.CHANGES_DONE_HINT:
+            # Same principle: only queue a check if none is already pending.
+            if self._ext_change_timer_id is None:
+                if not os.path.exists(path):
+                    return
                 try:
-                    with open(path, "r", encoding="utf-8") as f:
-                        disk_content = f.read()
+                    new_mtime = os.path.getmtime(path)
                 except OSError:
                     return
+                if new_mtime > self.active_file_mtime:
+                    self._ext_change_timer_id = GLib.timeout_add(
+                        100, self._check_external_change_deferred, path
+                    )
 
-                GLib.idle_add(self._check_external_change, new_mtime, disk_content)
+    def _check_external_change_deferred(self, path):
+        """Called once per debounce window — reads file and triggers reload if needed."""
+        self._ext_change_timer_id = None
+        if path != self.active_file_path:
+            return GLib.SOURCE_REMOVE
+        if not os.path.exists(path):
+            return GLib.SOURCE_REMOVE
+        try:
+            # Re-read mtime fresh — we may have skipped intermediate events.
+            current_mtime = os.path.getmtime(path)
+        except OSError:
+            return GLib.SOURCE_REMOVE
+        if current_mtime <= self.active_file_mtime:
+            return GLib.SOURCE_REMOVE
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                disk_content = f.read()
+        except OSError:
+            return GLib.SOURCE_REMOVE
+        self._check_external_change(current_mtime, disk_content)
+        return GLib.SOURCE_REMOVE
 
     def _check_external_change(self, new_mtime, disk_content):
         if not self.active_file_path:

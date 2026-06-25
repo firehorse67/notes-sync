@@ -2,7 +2,6 @@ import gi
 gi.require_version('Gtk', '4.0')
 gi.require_version('GdkPixbuf', '2.0')
 from gi.repository import Gtk, Pango, GObject, Gdk, GLib, Gio, GdkPixbuf
-import markdown
 import os
 import re
 import shutil
@@ -359,43 +358,43 @@ class MarkdownEditor(Gtk.Box):
         self._attachments = []
         self._is_loading = True
         self.buffer.set_text("")
+        self.attachments_flow.remove_all()
 
-        while True:
-            child = self.attachments_flow.get_first_child()
-            if not child:
-                break
-            self.attachments_flow.remove(child)
+        try:
+            trimmed_text = text.strip()
+            if trimmed_text:
+                _ATT_RE = re.compile(r'(!?)\[([^\]]*)\]\((\.attachments/[^)]+)\)')
 
-        trimmed_text = text.strip()
-        if trimmed_text:
-            _ATT_RE = re.compile(r'(!?)\[([^\]]*)\]\((\.attachments/[^)]+)\)')
+                def _collect_att(m):
+                    is_img = m.group(1) == '!'
+                    display = m.group(2)
+                    src = m.group(3)
+                    ext = os.path.splitext(src)[1].lower().lstrip('.')
+                    self._attachments.append({
+                        'type': 'image' if is_img else 'file',
+                        'src': src,
+                        'alt': display,
+                        'text': display,
+                    })
+                    self._add_attachment_pill(src, display, ext)
+                    return ''
 
-            def _collect_att(m):
-                is_img = m.group(1) == '!'
-                display = m.group(2)
-                src = m.group(3)
-                ext = os.path.splitext(src)[1].lower().lstrip('.')
-                self._attachments.append({
-                    'type': 'image' if is_img else 'file',
-                    'src': src,
-                    'alt': display,
-                    'text': display,
-                })
-                self._add_attachment_pill(src, display, ext)
-                return ''
+                cleaned = _ATT_RE.sub(_collect_att, trimmed_text)
+                cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
 
-            cleaned = _ATT_RE.sub(_collect_att, trimmed_text)
-            cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
+                if cleaned:
+                    import markdown
+                    html = markdown.markdown(cleaned, extensions=['fenced_code'])
+                    parser = HTMLToBufferParser(self.buffer, self)
+                    parser.feed(html)
 
-            if cleaned:
-                html = markdown.markdown(cleaned, extensions=['fenced_code'])
-                parser = HTMLToBufferParser(self.buffer, self)
-                parser.feed(html)
-
-        self.attachments_bar.set_visible(bool(self._attachments))
-        self.buffer.set_enable_undo(False)
-        self.buffer.set_enable_undo(True)
-        self._is_loading = False
+            self.attachments_bar.set_visible(bool(self._attachments))
+        finally:
+            # Always clear undo history even if the parser threw — otherwise
+            # each failed/partial load accumulates undo actions → GiB RAM usage.
+            self.buffer.set_enable_undo(False)
+            self.buffer.set_enable_undo(True)
+            self._is_loading = False
 
     def get_content(self):
         """Serialize Gtk.TextBuffer content to clean Markdown."""

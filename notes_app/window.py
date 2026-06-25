@@ -5,7 +5,7 @@ from gi.repository import Gtk, Adw, Gio, GLib, GObject, Gdk
 from .sidebar import SidebarView
 from .editor import MarkdownEditor
 from .config import load_local_config, save_local_config
-from .ai_helper import call_gemini_api, call_deepseek_api
+from .ai_helper import call_gemini_api, call_deepseek_api, call_deepseek_api_streaming
 import os
 import threading
 
@@ -291,12 +291,22 @@ class MainWindow(Adw.ApplicationWindow):
         self.file_manager.connect("save-status-changed", self._on_save_status_changed)
         self.file_manager.connect("note-saved", self._on_note_saved)
         self.file_manager.connect("sync-status-changed", self._on_sync_status_changed)
-        
-        # Populate sidebar on load
-        self.sidebar.populate()
-        
+        self.file_manager.connect("notebooks-changed", lambda *_: self._invalidate_workspace_cache())
+
+        # Workspace info cache for AI queries — built once in the background so
+        # individual queries don't block on FUSE I/O each time.
+        self._workspace_cache = None       # full workspace_info string for small workspaces
+        self._workspace_all_notes = []     # note metadata for large-workspace keyword filtering
+        self._workspace_total_size = 0
+        self._workspace_lock = threading.Lock()
+        threading.Thread(target=self._rebuild_workspace_cache, daemon=True).start()
+
         # Setup actions and keyboard shortcuts
         self._setup_actions()
+
+        # Populate sidebar after the window becomes visible so the event loop
+        # can respond to compositor pings before we do any file I/O.
+        GLib.idle_add(self.sidebar.populate)
 
     def _load_custom_css(self):
         """Inject custom CSS for tag pills, dimmer labels, blue header bars, and soft yellow sidebar."""
@@ -453,8 +463,10 @@ class MainWindow(Adw.ApplicationWindow):
     # --- UI Event Handlers ---
     def _on_note_selected(self, sidebar, file_path):
         self.banner.set_revealed(False)
-        if file_path:
+        if file_path and file_path != self.file_manager.active_file_path:
             self.file_manager.load_file(file_path)
+            self._set_editor_controls_visible(True)
+        elif file_path:
             self._set_editor_controls_visible(True)
 
     def _on_create_note(self, sidebar, title):
@@ -516,18 +528,10 @@ class MainWindow(Adw.ApplicationWindow):
             self._select_row_by_path(new_path)
 
     def _update_word_count(self):
-        import re
-        content = self.editor.get_content()
-        # Strip fenced code blocks, then markdown tokens, then count words
-        text = re.sub(r'```[\s\S]*?```', ' ', content)
-        text = re.sub(r'`[^`]+`', ' ', text)
-        text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
-        text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
-        text = re.sub(r'\*(.+?)\*', r'\1', text)
-        text = re.sub(r'~~(.+?)~~', r'\1', text)
-        text = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', text)
-        text = re.sub(r'^[-*+>]\s+', '', text, flags=re.MULTILINE)
-        text = re.sub(r'^\d+[.)]\s+', '', text, flags=re.MULTILINE)
+        buf = self.editor.buffer
+        start = buf.get_start_iter()
+        end = buf.get_end_iter()
+        text = buf.get_text(start, end, False)
         words = len(text.split())
         self.word_count_label.set_label(f"{words:,} words")
 
@@ -570,6 +574,74 @@ class MainWindow(Adw.ApplicationWindow):
     # --- File Manager Signaled Events ---
     def _on_files_changed(self, file_manager):
         self.sidebar.populate()
+        self._invalidate_workspace_cache()
+
+    def _invalidate_workspace_cache(self):
+        with self._workspace_lock:
+            self._workspace_cache = None
+        threading.Thread(target=self._rebuild_workspace_cache, daemon=True).start()
+
+    def _rebuild_workspace_cache(self):
+        """Walk the notes directory in the background and cache workspace info."""
+        notes_dir = self.file_manager.notes_dir
+        total_notes = 0
+        notes_list = []
+        total_size = 0
+        all_notes = []
+        try:
+            for root_dir, dirs, files in os.walk(notes_dir):
+                dirs[:] = [d for d in dirs if not d.startswith('.')]
+                for file in files:
+                    if file.endswith(".md"):
+                        path = os.path.join(root_dir, file)
+                        try:
+                            sz = os.path.getsize(path)
+                            total_size += sz
+                            total_notes += 1
+                            rel_dir = os.path.relpath(root_dir, notes_dir)
+                            notebook = "" if rel_dir == "." else rel_dir
+                            note_title = file[:-3]
+                            all_notes.append({
+                                'title': note_title,
+                                'notebook': notebook,
+                                'path': path,
+                                'size': sz
+                            })
+                            notes_list.append(
+                                f"- [{notebook}] {note_title}" if notebook else f"- {note_title}"
+                            )
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+
+        workspace_info = f"Total Notes in Workspace: {total_notes}\n"
+        if notes_list:
+            workspace_info += "Available Notes:\n" + "\n".join(notes_list)
+
+        # For small workspaces include full note contents in the cached string so
+        # the worker can use it directly without any further FUSE I/O.
+        if total_size < 150 * 1024:
+            contents_list = []
+            for n in all_notes:
+                try:
+                    with open(n['path'], 'r', encoding='utf-8') as f:
+                        raw = f.read()
+                    _, body = self.file_manager._split_front_matter(raw)
+                    header = f"Note: {n['title']}"
+                    if n['notebook']:
+                        header += f" (in notebook: {n['notebook']})"
+                    contents_list.append(f"=== {header} ===\n{body}\n")
+                except Exception:
+                    pass
+            if contents_list:
+                workspace_info += "\n\nHere is the content of the notes in the workspace to search through:\n"
+                workspace_info += "\n".join(contents_list)
+
+        with self._workspace_lock:
+            self._workspace_cache = workspace_info
+            self._workspace_all_notes = all_notes
+            self._workspace_total_size = total_size
 
     def _on_note_saved(self, file_manager, path, title, mtime):
         self.sidebar.update_note_row(path, title, mtime)
@@ -853,7 +925,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.ai_panel.append(self.chat_scrolled)
         
         # Add welcome message
-        GLib.idle_add(lambda: self._add_chat_message("assistant", "Hello, I am your AI notes assistant. Ask me anything about your notes."))
+        self._add_chat_message("assistant", "Hello, I am your AI notes assistant. Ask me anything about your notes.")
         
         # 3. Attachment context area
         self.attachment_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
@@ -863,7 +935,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.attachment_box.set_visible(False)
         
         self.attachment_checkbox = Gtk.CheckButton(label="Ask Gemini about active PDF")
-        self.attachment_checkbox.set_active(True)
+        self.attachment_checkbox.set_active(False)
         self.attachment_box.append(self.attachment_checkbox)
         
         self.ai_panel.append(self.attachment_box)
@@ -951,6 +1023,7 @@ class MainWindow(Adw.ApplicationWindow):
         
         if has_pdf:
             self.attachment_checkbox.set_label(f"Ask Gemini about '{pdf_name}'")
+            self.attachment_checkbox.set_active(False)
             self.attachment_box.set_visible(True)
         else:
             self.attachment_box.set_visible(False)
@@ -960,106 +1033,89 @@ class MainWindow(Adw.ApplicationWindow):
         prompt = self.chat_entry.get_text().strip()
         if not prompt:
             return
-            
+
         self.chat_entry.set_text("")
         self._add_chat_message("user", prompt)
-        
+
         self.chat_entry.set_sensitive(False)
         self.chat_send_btn.set_sensitive(False)
-        
+
         thinking_bubble_box = self._add_chat_message("assistant", "Thinking...")
-        
+
         config = load_local_config()
         ai_enabled = config.get("ai_enabled", True) and (config.get("ai_provider", "Disabled") != "Disabled")
-        
+
+        # Resolve PDF path on the main thread while editor state is accessible
         use_gemini = self.attachment_checkbox.get_active()
         pdf_path = None
-        
         if use_gemini and self.file_manager.active_file_path and hasattr(self.editor, "_attachments"):
             for att in self.editor._attachments:
                 if att.get("src", "").lower().endswith(".pdf"):
                     note_dir = os.path.dirname(self.file_manager.active_file_path)
                     pdf_path = os.path.join(note_dir, att["src"])
                     break
-                    
-        # Gather note count, list, and note contents recursively
-        total_notes = 0
-        notes_list = []
-        notes_content_str = ""
-        total_size = 0
-        all_notes = []
-        try:
-            for root_dir, dirs, files in os.walk(self.file_manager.notes_dir):
-                # Skip hidden directories
-                dirs[:] = [d for d in dirs if not d.startswith('.')]
-                for file in files:
-                    if file.endswith(".md"):
-                        path = os.path.join(root_dir, file)
-                        try:
-                            sz = os.path.getsize(path)
-                            total_size += sz
-                            total_notes += 1
-                            rel_dir = os.path.relpath(root_dir, self.file_manager.notes_dir)
-                            notebook = "" if rel_dir == "." else rel_dir
-                            note_title = file[:-3]
-                            all_notes.append({
-                                'title': note_title,
-                                'notebook': notebook,
-                                'path': path,
-                                'size': sz
-                            })
-                            if notebook:
-                                notes_list.append(f"- [{notebook}] {note_title}")
-                            else:
-                                notes_list.append(f"- {note_title}")
-                        except Exception:
-                            pass
-        except Exception:
-            pass
+        # Fall back to DeepSeek if Gemini was requested but no PDF is available
+        if use_gemini and not pdf_path:
+            use_gemini = False
 
-        # If total size is small (< 150KB), load all note contents!
-        if total_size < 150 * 1024:
-            contents_list = []
-            for n in all_notes:
-                try:
-                    with open(n['path'], 'r', encoding='utf-8') as f:
-                        raw = f.read()
-                    _, body = self.file_manager._split_front_matter(raw)
-                    header = f"Note: {n['title']}"
-                    if n['notebook']:
-                        header += f" (in notebook: {n['notebook']})"
-                    contents_list.append(f"=== {header} ===\n{body}\n")
-                except Exception:
-                    pass
-            notes_content_str = "\n".join(contents_list)
-        else:
-            # If notes are large, perform keyword filtering based on the prompt
+        # Read active note content on the main thread (editor is not thread-safe)
+        active_content = None
+        if self.file_manager.active_file_path:
+            active_content = self.editor.get_content()
+
+        thread = threading.Thread(
+            target=self._ai_query_worker,
+            args=(prompt, use_gemini, pdf_path, thinking_bubble_box, ai_enabled,
+                  self.file_manager.notes_dir, self.file_manager.active_file_path, active_content)
+        )
+        thread.daemon = True
+        thread.start()
+
+    def _ai_query_worker(self, prompt, use_gemini, pdf_path, thinking_bubble_box, ai_enabled,
+                          notes_dir, active_file_path, active_content):
+        config = load_local_config()
+
+        # Use cached workspace info; for large workspaces supplement with
+        # keyword-filtered note contents (still needs targeted file reads, but
+        # avoids the expensive os.walk + getsize on every query).
+        with self._workspace_lock:
+            workspace_info = self._workspace_cache
+            all_notes = list(self._workspace_all_notes)
+            total_size = self._workspace_total_size
+
+        if workspace_info is None:
+            # Cache not ready yet — build synchronously (only happens on the very
+            # first query before the background thread finishes).
+            self._rebuild_workspace_cache()
+            with self._workspace_lock:
+                workspace_info = self._workspace_cache or ""
+                all_notes = list(self._workspace_all_notes)
+                total_size = self._workspace_total_size
+
+        # For large workspaces the cache holds only the note list; add content for
+        # the keyword-matched notes now.
+        if total_size >= 150 * 1024:
             words = [w.strip().lower() for w in prompt.split() if len(w.strip()) > 2]
             matched_notes = []
             for n in all_notes:
-                # Always include the active note if there is one
                 is_active = False
-                if self.file_manager.active_file_path:
+                if active_file_path:
                     try:
-                        is_active = os.path.samefile(n['path'], self.file_manager.active_file_path)
+                        is_active = os.path.samefile(n['path'], active_file_path)
                     except Exception:
                         pass
                 if is_active:
                     matched_notes.append(n)
                     continue
-                # Or if the title/notebook is in prompt
                 if n['title'].lower() in prompt.lower() or (n['notebook'] and n['notebook'].lower() in prompt.lower()):
                     matched_notes.append(n)
                     continue
-                # Or if keywords match body content
                 try:
                     body_lower = self.file_manager.get_body_text(n['path'])
                     if any(word in body_lower for word in words):
                         matched_notes.append(n)
                 except Exception:
                     pass
-            
-            # Limit to top 5 notes to avoid huge context
             matched_notes = matched_notes[:5]
             contents_list = []
             for n in matched_notes:
@@ -1073,40 +1129,23 @@ class MainWindow(Adw.ApplicationWindow):
                     contents_list.append(f"=== {header} ===\n{body}\n")
                 except Exception:
                     pass
-            notes_content_str = "\n".join(contents_list)
-            
-        workspace_info = f"Total Notes in Workspace: {total_notes}\n"
-        if notes_list:
-            workspace_info += "Available Notes:\n" + "\n".join(notes_list)
-        if notes_content_str:
-            workspace_info += f"\n\nHere is the content of the notes in the workspace to search through:\n{notes_content_str}"
-        
-        thread = threading.Thread(
-            target=self._ai_query_worker,
-            args=(prompt, use_gemini, pdf_path, thinking_bubble_box, ai_enabled, workspace_info)
-        )
-        thread.daemon = True
-        thread.start()
+            if contents_list:
+                workspace_info += "\n\nHere is the content of relevant notes:\n" + "\n".join(contents_list)
 
-    def _ai_query_worker(self, prompt, use_gemini, pdf_path, thinking_bubble_box, ai_enabled, workspace_info):
-        config = load_local_config()
-        active_content = None
-        
-        def get_note_content():
-            nonlocal active_content
-            if self.file_manager.active_file_path:
-                active_content = self.editor.get_content()
+        def set_label(text):
+            try:
+                bubble_box = thinking_bubble_box.get_first_child()
+                label = bubble_box.get_first_child()
+                label.set_text(text)
+            except Exception:
+                pass
             return False
-            
-        GLib.idle_add(get_note_content)
-        
-        import time
-        time.sleep(0.1)
-        
+
+        response_text = ""
         try:
             if not ai_enabled:
                 raise ValueError("AI Assistant is disabled in Settings.")
-                
+
             if use_gemini:
                 api_key = config.get("gemini_api_key", "").strip()
                 if not api_key:
@@ -1116,21 +1155,26 @@ class MainWindow(Adw.ApplicationWindow):
                 api_key = config.get("deepseek_api_key", "").strip()
                 if not api_key:
                     raise ValueError("DeepSeek API key is not configured in Settings.")
-                response_text = call_deepseek_api(api_key, prompt, note_content=active_content, workspace_info=workspace_info)
+                # Stream tokens to the label as they arrive so the response feels instant.
+                def on_chunk(chunk):
+                    nonlocal response_text
+                    response_text += chunk
+                    snapshot = response_text
+                    GLib.idle_add(lambda t=snapshot: set_label(t))
+                call_deepseek_api_streaming(
+                    api_key, prompt,
+                    note_content=active_content,
+                    workspace_info=workspace_info,
+                    on_chunk=on_chunk
+                )
         except Exception as e:
             response_text = f"Error: {e}"
-            
+
         def update_ui():
-            try:
-                bubble_box = thinking_bubble_box.get_first_child()
-                label = bubble_box.get_first_child()
-                label.set_text(response_text)
-            except Exception as e:
-                print(f"Failed to update chat UI: {e}")
-                
+            set_label(response_text)
             self.chat_entry.set_sensitive(True)
             self.chat_send_btn.set_sensitive(True)
             self._scroll_to_bottom()
             return False
-            
+
         GLib.idle_add(update_ui)
