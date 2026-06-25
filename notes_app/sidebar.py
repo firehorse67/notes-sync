@@ -503,12 +503,8 @@ class SidebarView(Gtk.Box):
         selected_row = self.list_box.get_selected_row()
         selected_path = selected_row.file_path if selected_row else self.active_path
         
-        # Clear note items
-        while True:
-            child = self.list_box.get_first_child()
-            if not child:
-                break
-            self.list_box.remove(child)
+        # Clear note items (remove_all is safe and avoids GTK4 iteration pitfalls)
+        self.list_box.remove_all()
             
         files = self.file_manager.get_files()
         

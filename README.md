@@ -24,6 +24,13 @@ A native Linux WYSIWYG notes application built with Python, GTK4, and Libadwaita
 - **Manual sync button** — header bar button triggers `rclone sync` on demand; shows syncing/done/error toast
 - **External change detection** — if a note is modified externally (e.g. by a sync), the app reloads it silently or shows a banner if you have unsaved changes
 
+### AI Assistant
+- **DeepSeek** handles general queries — summarise, rewrite, search across notes, answer questions about your workspace
+- **Gemini** is used for PDF interrogation — when a note has a PDF attachment, check *Ask Gemini about PDF* to query it directly
+- Workspace context (note list + contents) is cached in the background so queries are fast even on a network-mounted drive
+- Responses stream token-by-token so the first words appear within a couple of seconds
+- Configure API keys in **Settings** (gear icon); both keys are stored locally in `~/.config/notes-sync/config.json` and are never committed to the repository
+
 ### Import / Export
 - Export a single note as Markdown, JSON, or PDF
 - Export a notebook or the entire project as a ZIP archive or JSON bundle
@@ -90,6 +97,8 @@ python3 run.py
 
 ## Configuration
 
+### Notes directory and sync command
+
 Edit `notes_app/config.py` to set your notes directory and rclone sync command:
 
 ```python
@@ -99,6 +108,15 @@ NOTES_DIR = os.path.expanduser("~/Sync/GoogleDrive/Notes/")
 # Run `rclone listremotes` to see available remotes
 RCLONE_SYNC_CMD = ['rclone', 'sync', NOTES_DIR.rstrip('/'), 'gdrive:Notes', '--quiet']
 ```
+
+### AI API keys
+
+Open **Settings** (gear icon in the header bar) and enter your API keys:
+
+- **DeepSeek API key** — from [platform.deepseek.com](https://platform.deepseek.com)
+- **Gemini API key** — from [aistudio.google.com](https://aistudio.google.com)
+
+Keys are saved to `~/.config/notes-sync/config.json` on your local machine and are never stored in the repository.
 
 ---
 
