@@ -37,7 +37,6 @@ class FileManager(GObject.Object):
         self._notebooks_changed_pending = False  # guard against idle_add flood in root monitor
         self._ext_change_timer_id = None         # debounce CHANGES_DONE_HINT events
         
-        self._indexing_lock = threading.Lock()
         self._index_in_progress = False
         
         # Dual monitors: 
@@ -84,96 +83,101 @@ class FileManager(GObject.Object):
         if self._index_in_progress:
             return
             
+        self._index_in_progress = True
+        
+        # Take local snapshots of caches on the main thread
+        cache_snapshot = dict(self._metadata_cache)
+        content_snapshot = dict(self._content_index)
+        
         def index_worker():
             if not os.path.exists(self.notes_dir):
+                self._index_in_progress = False
                 return
-            with self._indexing_lock:
-                self._index_in_progress = True
-                try:
-                    metadata_updates = {}
-                    content_updates = {}
-                    all_found_paths = set()
-                    
-                    for root, dirs, files in os.walk(self.notes_dir):
-                        dirs[:] = [d for d in dirs if not d.startswith('.')]
-                        for file in files:
-                            if file.endswith(".md"):
-                                path = os.path.join(root, file)
-                                all_found_paths.add(path)
-                                try:
-                                    mtime = os.path.getmtime(path)
-                                    sz = os.path.getsize(path)
-                                    
-                                    cached_meta = self._metadata_cache.get(path)
-                                    cached_content = self._content_index.get(path)
-                                    
-                                    needs_parse = (
-                                        not cached_meta or cached_meta.get('mtime') != mtime or
-                                        not cached_content or cached_content.get('mtime') != mtime or
-                                        'size' not in cached_meta
-                                    )
-                                    
-                                    if needs_parse:
-                                        with open(path, "r", encoding="utf-8") as f:
-                                            content = f.read()
-                                        fm, body = self._split_front_matter(content)
-                                        
-                                        tags = []
-                                        pinned = False
-                                        if fm:
-                                            for line in fm.splitlines():
-                                                stripped = line.strip()
-                                                if stripped.startswith("tags:"):
-                                                    tags_str = stripped.split(":", 1)[1].strip()
-                                                    if tags_str.startswith("[") and tags_str.endswith("]"):
-                                                        tags_str = tags_str[1:-1]
-                                                    tags = [t.strip() for t in tags_str.split(",") if t.strip()]
-                                                elif stripped == "pinned: true":
-                                                    pinned = True
-                                                    
-                                        title = None
-                                        for line in body.splitlines():
-                                            if line.strip().startswith("#"):
-                                                title = line.strip().lstrip("#").strip()
-                                                break
-                                        if not title:
-                                            title = os.path.basename(path)[:-3]
-                                            
-                                        metadata_updates[path] = {
-                                            'mtime': mtime,
-                                            'tags': tags,
-                                            'title': title,
-                                            'pinned': pinned,
-                                            'size': sz
-                                        }
-                                        content_updates[path] = {
-                                            'mtime': mtime,
-                                            'text': body.lower()
-                                        }
-                                except Exception:
-                                    continue
-                                    
-                    def apply_updates():
-                        self._metadata_cache.update(metadata_updates)
-                        self._content_index.update(content_updates)
-                        
-                        # Remove deleted files from caches
-                        for p in list(self._metadata_cache.keys()):
-                            if p not in all_found_paths:
-                                self._metadata_cache.pop(p, None)
-                        for p in list(self._content_index.keys()):
-                            if p not in all_found_paths:
-                                self._content_index.pop(p, None)
+            try:
+                metadata_updates = {}
+                content_updates = {}
+                all_found_paths = set()
+                
+                for root, dirs, files in os.walk(self.notes_dir):
+                    dirs[:] = [d for d in dirs if not d.startswith('.')]
+                    for file in files:
+                        if file.endswith(".md"):
+                            path = os.path.join(root, file)
+                            all_found_paths.add(path)
+                            try:
+                                mtime = os.path.getmtime(path)
+                                sz = os.path.getsize(path)
                                 
-                        self._save_metadata_cache()
-                        self.emit('files-changed')
-                        return GLib.SOURCE_REMOVE
-                        
-                    GLib.idle_add(apply_updates)
-                except Exception as e:
-                    print(f"Error in indexing worker: {e}")
-                finally:
-                    self._index_in_progress = False
+                                cached_meta = cache_snapshot.get(path)
+                                cached_content = content_snapshot.get(path)
+                                
+                                needs_parse = (
+                                    not cached_meta or cached_meta.get('mtime') != mtime or
+                                    not cached_content or cached_content.get('mtime') != mtime or
+                                    'size' not in cached_meta
+                                )
+                                
+                                if needs_parse:
+                                    with open(path, "r", encoding="utf-8") as f:
+                                        content = f.read()
+                                    fm, body = self._split_front_matter(content)
+                                    
+                                    tags = []
+                                    pinned = False
+                                    if fm:
+                                        for line in fm.splitlines():
+                                            stripped = line.strip()
+                                            if stripped.startswith("tags:"):
+                                                tags_str = stripped.split(":", 1)[1].strip()
+                                                if tags_str.startswith("[") and tags_str.endswith("]"):
+                                                    tags_str = tags_str[1:-1]
+                                                tags = [t.strip() for t in tags_str.split(",") if t.strip()]
+                                            elif stripped == "pinned: true":
+                                                pinned = True
+                                                
+                                    title = None
+                                    for line in body.splitlines():
+                                        if line.strip().startswith("#"):
+                                            title = line.strip().lstrip("#").strip()
+                                            break
+                                    if not title:
+                                        title = os.path.basename(path)[:-3]
+                                        
+                                    metadata_updates[path] = {
+                                        'mtime': mtime,
+                                        'tags': tags,
+                                        'title': title,
+                                        'pinned': pinned,
+                                        'size': sz
+                                    }
+                                    content_updates[path] = {
+                                        'mtime': mtime,
+                                        'text': body.lower()
+                                    }
+                            except Exception:
+                                continue
+                                
+                def apply_updates():
+                    self._metadata_cache.update(metadata_updates)
+                    self._content_index.update(content_updates)
+                    
+                    # Remove deleted files from caches
+                    for p in list(self._metadata_cache.keys()):
+                        if p not in all_found_paths:
+                            self._metadata_cache.pop(p, None)
+                    for p in list(self._content_index.keys()):
+                        if p not in all_found_paths:
+                            self._content_index.pop(p, None)
+                            
+                    self._save_metadata_cache()
+                    self.emit('files-changed')
+                    return GLib.SOURCE_REMOVE
+                    
+                GLib.idle_add(apply_updates)
+            except Exception as e:
+                print(f"Error in indexing worker: {e}")
+            finally:
+                self._index_in_progress = False
 
         threading.Thread(target=index_worker, daemon=True).start()
 
@@ -255,18 +259,22 @@ class FileManager(GObject.Object):
             for name in os.listdir(target_dir):
                 if name.endswith(".md"):
                     path = os.path.join(target_dir, name)
-                    try:
-                        mtime = os.path.getmtime(path)
-                        meta = self._get_front_matter_metadata(path, mtime)
-                        files.append({
-                            'name': name,
-                            'path': path,
-                            'mtime': mtime,
-                            'tags': meta['tags'],
-                            'pinned': meta['pinned'],
-                        })
-                    except OSError:
-                        continue
+                    cached = self._metadata_cache.get(path)
+                    if cached:
+                        mtime = cached.get('mtime', 0)
+                        tags = cached.get('tags', [])
+                        pinned = cached.get('pinned', False)
+                    else:
+                        mtime = 0
+                        tags = []
+                        pinned = False
+                    files.append({
+                        'name': name,
+                        'path': path,
+                        'mtime': mtime,
+                        'tags': tags,
+                        'pinned': pinned,
+                    })
         except OSError as e:
             print(f"Error listing files: {e}")
 

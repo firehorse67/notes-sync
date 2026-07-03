@@ -593,10 +593,9 @@ class MainWindow(Adw.ApplicationWindow):
         total_size = 0
         all_notes = []
         
-        # Access file manager cache copies thread-safely
-        with self.file_manager._indexing_lock:
-            cache_copy = dict(self.file_manager._metadata_cache)
-            content_copy = dict(self.file_manager._content_index)
+        # Access file manager cache copies
+        cache_copy = dict(self.file_manager._metadata_cache)
+        content_copy = dict(self.file_manager._content_index)
             
         for path, meta in cache_copy.items():
             try:
