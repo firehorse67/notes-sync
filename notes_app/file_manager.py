@@ -399,26 +399,35 @@ class FileManager(GObject.Object):
             return None
 
     def load_file(self, path):
-        """Load note file content into memory."""
+        """Load note file content into memory asynchronously."""
         if not os.path.exists(path):
             return False
             
         self.cancel_autosave_timer()
         self.active_file_path = path
         
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                content = f.read()
-            self.active_file_mtime = os.path.getmtime(path)
-            self.dirty = False
-            fm, body = self._split_front_matter(content)
-            self._cached_front_matter[path] = fm
-            self.emit('file-loaded', path, body)
-            self.emit('save-status-changed', 'saved')
-            return True
-        except OSError as e:
-            print(f"Error loading note: {e}")
-            return False
+        def run_load():
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    content = f.read()
+                mtime = os.path.getmtime(path)
+                fm, body = self._split_front_matter(content)
+                
+                def on_loaded():
+                    if self.active_file_path == path:
+                        self.active_file_mtime = mtime
+                        self.dirty = False
+                        self._cached_front_matter[path] = fm
+                        self.emit('file-loaded', path, body)
+                        self.emit('save-status-changed', 'saved')
+                    return GLib.SOURCE_REMOVE
+                
+                GLib.idle_add(on_loaded)
+            except OSError as e:
+                print(f"Error loading note: {e}")
+                
+        threading.Thread(target=run_load, daemon=True).start()
+        return True
 
     def save_active_file(self, content, on_complete=None, get_content_func=None):
         """Save content asynchronously to disk, preserving front matter."""

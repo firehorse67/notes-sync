@@ -464,8 +464,10 @@ class MainWindow(Adw.ApplicationWindow):
     def _on_note_selected(self, sidebar, file_path):
         self.banner.set_revealed(False)
         if file_path and file_path != self.file_manager.active_file_path:
+            self.editor.set_content("Loading note...", file_path)
+            self.editor.set_editable(False)
+            self._set_editor_controls_visible(False)
             self.file_manager.load_file(file_path)
-            self._set_editor_controls_visible(True)
         elif file_path:
             self._set_editor_controls_visible(True)
 
@@ -542,8 +544,10 @@ class MainWindow(Adw.ApplicationWindow):
     def _on_reload_banner_clicked(self, banner):
         self.banner.set_revealed(False)
         if self.file_manager.active_file_path:
+            self.editor.set_content("Reloading note...", self.file_manager.active_file_path)
+            self.editor.set_editable(False)
+            self._set_editor_controls_visible(False)
             self.file_manager.load_file(self.file_manager.active_file_path)
-            self._show_toast("Reloaded from disk")
 
     def _on_autosave_active(self, switch, pspec):
         active = switch.get_active()
