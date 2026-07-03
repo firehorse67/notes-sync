@@ -319,6 +319,7 @@ class SidebarView(Gtk.Box):
         self.file_manager = file_manager
         self.active_path = None
         self.active_tag = None
+        self._search_debounce_id = None
         
         # --- Notebook Selector Bar ---
         self.notebook_bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
@@ -510,7 +511,7 @@ class SidebarView(Gtk.Box):
         
         row_to_select = None
         for file_info in files:
-            title = self.file_manager.get_display_title(file_info['path'])
+            title = self.file_manager.get_display_title(file_info['path'], file_info['mtime'])
             row = NoteRow(title, file_info['path'], file_info['mtime'], file_info['tags'], file_info.get('pinned', False))
             self.list_box.append(row)
             
@@ -667,16 +668,23 @@ class SidebarView(Gtk.Box):
             self.active_path = None
 
     def _on_search_changed(self, entry):
-        self.list_box.invalidate_filter()
+        if self._search_debounce_id is not None:
+            GLib.source_remove(self._search_debounce_id)
+        
+        def do_filter():
+            self.list_box.invalidate_filter()
+            self._search_debounce_id = None
+            return False
+            
+        self._search_debounce_id = GLib.timeout_add(150, do_filter)
 
     def _filter_row(self, row):
         # 1. Search text filter (title, filename, and full body)
         search_text = self.search_entry.get_text().strip().lower()
         if search_text:
-            title_match = search_text in row.title.lower()
-            filename_match = search_text in os.path.basename(row.file_path).lower()
-            body_match = search_text in self.file_manager.get_body_text(row.file_path)
-            if not (title_match or filename_match or body_match):
+            if (search_text not in row.title.lower() and
+                search_text not in os.path.basename(row.file_path).lower() and
+                search_text not in self.file_manager.get_body_text(row.file_path)):
                 return False
 
         # 2. Tag filter

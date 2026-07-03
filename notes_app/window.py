@@ -579,59 +579,57 @@ class MainWindow(Adw.ApplicationWindow):
     def _invalidate_workspace_cache(self):
         with self._workspace_lock:
             self._workspace_cache = None
-        threading.Thread(target=self._rebuild_workspace_cache, daemon=True).start()
+        self._rebuild_workspace_cache()
 
     def _rebuild_workspace_cache(self):
-        """Walk the notes directory in the background and cache workspace info."""
+        """Build workspace cache from the file manager's in-memory metadata cache."""
         notes_dir = self.file_manager.notes_dir
         total_notes = 0
         notes_list = []
         total_size = 0
         all_notes = []
-        try:
-            for root_dir, dirs, files in os.walk(notes_dir):
-                dirs[:] = [d for d in dirs if not d.startswith('.')]
-                for file in files:
-                    if file.endswith(".md"):
-                        path = os.path.join(root_dir, file)
-                        try:
-                            sz = os.path.getsize(path)
-                            total_size += sz
-                            total_notes += 1
-                            rel_dir = os.path.relpath(root_dir, notes_dir)
-                            notebook = "" if rel_dir == "." else rel_dir
-                            note_title = file[:-3]
-                            all_notes.append({
-                                'title': note_title,
-                                'notebook': notebook,
-                                'path': path,
-                                'size': sz
-                            })
-                            notes_list.append(
-                                f"- [{notebook}] {note_title}" if notebook else f"- {note_title}"
-                            )
-                        except Exception:
-                            pass
-        except Exception:
-            pass
+        
+        # Access file manager cache copies thread-safely
+        with self.file_manager._indexing_lock:
+            cache_copy = dict(self.file_manager._metadata_cache)
+            content_copy = dict(self.file_manager._content_index)
+            
+        for path, meta in cache_copy.items():
+            try:
+                sz = meta.get('size', 0)
+                total_size += sz
+                total_notes += 1
+                rel_dir = os.path.relpath(os.path.dirname(path), notes_dir)
+                notebook = "" if rel_dir == "." else rel_dir
+                note_title = meta.get('title') or os.path.basename(path)[:-3]
+                all_notes.append({
+                    'title': note_title,
+                    'notebook': notebook,
+                    'path': path,
+                    'size': sz
+                })
+                notes_list.append(
+                    f"- [{notebook}] {note_title}" if notebook else f"- {note_title}"
+                )
+            except Exception:
+                pass
 
         workspace_info = f"Total Notes in Workspace: {total_notes}\n"
         if notes_list:
             workspace_info += "Available Notes:\n" + "\n".join(notes_list)
 
-        # For small workspaces include full note contents in the cached string so
-        # the worker can use it directly without any further FUSE I/O.
+        # For small workspaces include full note contents in the cached string
         if total_size < 150 * 1024:
             contents_list = []
             for n in all_notes:
                 try:
-                    with open(n['path'], 'r', encoding='utf-8') as f:
-                        raw = f.read()
-                    _, body = self.file_manager._split_front_matter(raw)
-                    header = f"Note: {n['title']}"
-                    if n['notebook']:
-                        header += f" (in notebook: {n['notebook']})"
-                    contents_list.append(f"=== {header} ===\n{body}\n")
+                    cached_content = content_copy.get(n['path'])
+                    if cached_content:
+                        body = cached_content['text']
+                        header = f"Note: {n['title']}"
+                        if n['notebook']:
+                            header += f" (in notebook: {n['notebook']})"
+                        contents_list.append(f"=== {header} ===\n{body}\n")
                 except Exception:
                     pass
             if contents_list:
