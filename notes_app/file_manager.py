@@ -148,11 +148,12 @@ class FileManager(GObject.Object):
                                         'tags': tags,
                                         'title': title,
                                         'pinned': pinned,
-                                        'size': sz
+                                        'size': sz,
+                                        'front_matter': fm
                                     }
                                     content_updates[path] = {
                                         'mtime': mtime,
-                                        'text': body.lower()
+                                        'text': body
                                     }
                             except Exception:
                                 continue
@@ -161,10 +162,16 @@ class FileManager(GObject.Object):
                     self._metadata_cache.update(metadata_updates)
                     self._content_index.update(content_updates)
                     
+                    # Update front-matter cache
+                    for p, meta in metadata_updates.items():
+                        if 'front_matter' in meta:
+                            self._cached_front_matter[p] = meta['front_matter']
+                    
                     # Remove deleted files from caches
                     for p in list(self._metadata_cache.keys()):
                         if p not in all_found_paths:
                             self._metadata_cache.pop(p, None)
+                            self._cached_front_matter.pop(p, None)
                     for p in list(self._content_index.keys()):
                         if p not in all_found_paths:
                             self._content_index.pop(p, None)
@@ -306,7 +313,7 @@ class FileManager(GObject.Object):
         """Return lowercased body text for full-text search, cached by mtime."""
         cached = self._content_index.get(file_path)
         if cached:
-            return cached['text']
+            return cached['text'].lower()
         return ""
 
     def get_all_tags(self):
@@ -407,13 +414,37 @@ class FileManager(GObject.Object):
             return None
 
     def load_file(self, path):
-        """Load note file content into memory asynchronously."""
+        """Load note file content into memory asynchronously or instantly from cache."""
         if not os.path.exists(path):
             return False
             
         self.cancel_autosave_timer()
         self.active_file_path = path
         
+        # Cache-First: try instant load from cache if fresh
+        cached_content = self._content_index.get(path)
+        cached_meta = self._metadata_cache.get(path)
+        if cached_content and cached_meta:
+            mtime = cached_content.get('mtime')
+            try:
+                disk_mtime = os.path.getmtime(path)
+                if mtime == disk_mtime:
+                    self.active_file_mtime = disk_mtime
+                    self.dirty = False
+                    
+                    # Ensure front matter is cached
+                    if path not in self._cached_front_matter:
+                        # Parse it if not present
+                        pass
+                    
+                    body = cached_content['text']
+                    self.emit('file-loaded', path, body)
+                    self.emit('save-status-changed', 'saved')
+                    return True
+            except OSError:
+                pass
+        
+        # Cache miss or stale: load asynchronously in background
         def run_load():
             try:
                 with open(path, "r", encoding="utf-8") as f:
@@ -426,6 +457,8 @@ class FileManager(GObject.Object):
                         self.active_file_mtime = mtime
                         self.dirty = False
                         self._cached_front_matter[path] = fm
+                        # Update content cache with original case body
+                        self._content_index[path] = {'mtime': mtime, 'text': body}
                         self.emit('file-loaded', path, body)
                         self.emit('save-status-changed', 'saved')
                     return GLib.SOURCE_REMOVE
@@ -475,8 +508,7 @@ class FileManager(GObject.Object):
             def on_main_thread():
                 if self.active_file_path == file_path:
                     if success:
-                        self.active_file_mtime = new_mtime
-                        self._content_index[file_path] = {'mtime': new_mtime, 'text': content.lower()}
+                        self._content_index[file_path] = {'mtime': new_mtime, 'text': content}
                         current_content = get_content_func() if get_content_func else content
                         if current_content == content:
                             self.dirty = False
