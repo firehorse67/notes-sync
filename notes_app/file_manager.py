@@ -486,7 +486,8 @@ class FileManager(GObject.Object):
             success = False
             new_mtime = self.active_file_mtime
             try:
-                front_matter = self._cached_front_matter.get(file_path) or "---\ntags: []\n---\n"
+                cached_fm = self._cached_front_matter.get(file_path)
+                front_matter = cached_fm if cached_fm is not None else "---\ntags: []\n---\n"
                 full_content = front_matter + content
                 
                 # Atomic save
