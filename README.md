@@ -36,7 +36,7 @@ A native Linux WYSIWYG notes application built with Python, GTK4, and Libadwaita
 - Export a single note as Markdown, JSON, or PDF
 - Export a notebook or the entire project as a ZIP archive or JSON bundle
 - Import notes from Markdown or JSON; import notebooks from ZIP
-- **Brief compatibility** — *Export Entire Project for Brief (JSON)* writes a file that [Brief](https://github.com/firehorse67/brief) can import, and the JSON import buttons accept Brief exports
+- **Brief compatibility** — *Export for Brief* (per note) and *Export Entire Project for Brief (JSON)* write a file that [Brief](https://github.com/firehorse67/brief) can import, and the JSON import buttons accept Brief exports
   - Notebooks travel as `notebook:<name>` labels; tags ↔ labels; the first `# heading` ↔ title
   - Each note keeps a stable `brief_id` (and `color`, `created`) in its front matter, so re-importing overwrites instead of duplicating
   - Brief list notes become bullet lists; attachments aren't carried over

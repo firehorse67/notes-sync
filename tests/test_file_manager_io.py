@@ -89,6 +89,14 @@ class FileManagerIOTests(unittest.TestCase):
         self.assertIn(f"brief_id: {shop['id']}", text)
         self.assertIn("tags: [errands]", text)
 
+    def test_single_note_brief_export(self):
+        path = self.write("Work/Plan.md", "---\ntags: [q4]\n---\n# Plan\n\nBody\n")
+        self.assertTrue(self.fm.export_to_brief(self.out, paths=[path]))
+        with open(self.out) as f:
+            payload = json.load(f)
+        self.assertEqual(payload["app"], "brief")
+        self.assertEqual([n["title"] for n in payload["notes"]], ["Plan"])
+
     def test_single_note_json_button_accepts_brief_file(self):
         src = os.path.join(self.tmp.name, "brief.json")
         with open(src, "w") as f:

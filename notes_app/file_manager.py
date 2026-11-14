@@ -1465,15 +1465,16 @@ def hello_world():
     # Brief (github.com/firehorse67/brief) interchange
     # ------------------------------------------------------------------
 
-    def export_to_brief(self, dest_path, notebook=False):
-        """Write a Brief-compatible export of the whole workspace, or one notebook.
+    def export_to_brief(self, dest_path, notebook=False, paths=None):
+        """Write a Brief-compatible export of the whole workspace, one notebook, or given notes.
 
         notebook=False → everything; None → root notes only; str → that notebook.
+        paths, if given, overrides notebook and exports exactly those note files.
         Notebooks are carried as "notebook:<name>" labels so they survive a round trip.
         """
         try:
             notes = []
-            for path in self._all_note_paths(notebook):
+            for path in (paths if paths is not None else self._all_note_paths(notebook)):
                 with open(path, 'r', encoding='utf-8') as f:
                     raw = f.read()
                 rel = os.path.relpath(path, self.notes_dir).replace(os.sep, '/')
