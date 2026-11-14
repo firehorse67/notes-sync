@@ -216,15 +216,10 @@ class MainWindow(Adw.ApplicationWindow):
         exp_md_btn.connect("clicked", self._on_export_markdown_clicked, transfer_popover)
         transfer_box.append(exp_md_btn)
         
-        exp_json_btn = Gtk.Button(label="Export as JSON (.json)...")
+        exp_json_btn = Gtk.Button(label="Export as JSON (also for Brief)...")
         exp_json_btn.set_has_frame(False)
         exp_json_btn.connect("clicked", self._on_export_json_clicked, transfer_popover)
         transfer_box.append(exp_json_btn)
-
-        exp_brief_btn = Gtk.Button(label="Export for Brief (.json)...")
-        exp_brief_btn.set_has_frame(False)
-        exp_brief_btn.connect("clicked", self._on_export_json_clicked, transfer_popover, True)
-        transfer_box.append(exp_brief_btn)
 
         exp_pdf_btn = Gtk.Button(label="Export as PDF (.pdf)...")
         exp_pdf_btn.set_has_frame(False)
@@ -236,7 +231,7 @@ class MainWindow(Adw.ApplicationWindow):
         imp_md_btn.connect("clicked", self._on_import_markdown_clicked, transfer_popover)
         transfer_box.append(imp_md_btn)
         
-        imp_json_btn = Gtk.Button(label="Import from JSON (.json)...")
+        imp_json_btn = Gtk.Button(label="Import from JSON or Brief...")
         imp_json_btn.set_has_frame(False)
         imp_json_btn.connect("clicked", self._on_import_json_clicked, transfer_popover)
         transfer_box.append(imp_json_btn)
@@ -769,20 +764,20 @@ class MainWindow(Adw.ApplicationWindow):
         dialog.connect("response", on_response)
         dialog.show()
 
-    def _on_export_json_clicked(self, btn, popover, for_brief=False):
+    def _on_export_json_clicked(self, btn, popover):
         popover.popdown()
         if not self.file_manager.active_file_path:
             return
 
         dialog = Gtk.FileChooserNative(
-            title="Export Note for Brief" if for_brief else "Export Note to JSON",
+            title="Export Note to JSON",
             transient_for=self,
             action=Gtk.FileChooserAction.SAVE,
             accept_label="Export",
             cancel_label="Cancel"
         )
         title = self.file_manager.get_display_title(self.file_manager.active_file_path)
-        dialog.set_current_name(f"{title} (Brief).json" if for_brief else f"{title}.json")
+        dialog.set_current_name(f"{title}.json")
         
         filter_json = Gtk.FileFilter()
         filter_json.set_name("JSON files (*.json)")
@@ -792,13 +787,8 @@ class MainWindow(Adw.ApplicationWindow):
         def on_response(dialog, response_id):
             if response_id == Gtk.ResponseType.ACCEPT:
                 dest = dialog.get_file().get_path()
-                path = self.file_manager.active_file_path
-                if for_brief:
-                    ok = self.file_manager.export_to_brief(dest, paths=[path])
-                else:
-                    ok = self.file_manager.export_note_to_json(path, dest)
-                if ok:
-                    self._show_toast("Note exported for Brief" if for_brief else "Note exported successfully")
+                if self.file_manager.export_note_to_json(self.file_manager.active_file_path, dest):
+                    self._show_toast("Note exported successfully")
                 else:
                     self._show_toast("Failed to export note")
             dialog.destroy()

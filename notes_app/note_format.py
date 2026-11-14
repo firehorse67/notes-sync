@@ -232,10 +232,25 @@ def note_to_brief(raw, rel_path, mtime):
     }
 
 
+def note_to_export(raw, rel_path, mtime):
+    """One note for the shared JSON format: Brief's fields plus notes-sync's own.
+
+    Brief ignores the extra keys; notes-sync uses "content" to restore the file verbatim.
+    """
+    n = note_to_brief(raw, rel_path, mtime)
+    note = parse_note(raw, n["title"])
+    n["content"] = note["content"]
+    n["tags"] = note["meta"]["tags"]
+    n["notebook"] = rel_path.rsplit("/", 1)[0] if "/" in rel_path else ""
+    return n
+
+
 def make_brief_payload(notes, exported_ts):
+    """Envelope readable by both Brief ("app"/"schemaVersion") and notes-sync ("version")."""
     return {
         "app": BRIEF_APP,
         "schemaVersion": BRIEF_SCHEMA_VERSION,
+        "version": 1,
         "exportedAt": _iso(exported_ts),
         "notes": notes,
     }
@@ -286,6 +301,26 @@ def brief_to_note(n):
         first = body.strip().splitlines()[0] if body.strip() else ""
         title = first[:60].strip() or "Untitled"
 
+    fm = build_front_matter(
+        tags=tags,
+        pinned=bool(n.get("pinned")),
+        extra={
+            "color": n.get("color") if isinstance(n.get("color"), str) else "",
+            "brief_id": n["id"],
+            "created": n.get("createdAt") if parse_iso(n.get("createdAt")) else "",
+        },
+    )
+    updated = parse_iso(n.get("updatedAt"))
+
+    # Written by notes-sync itself: restore the original Markdown exactly, unless the
+    # title/body were changed after export (then they win over the stale "content").
+    content = n.get("content")
+    if isinstance(content, str) and (
+        find_title(content) in (None, title)
+        and strip_title_heading(content).strip("\n") == body.strip("\n")
+    ):
+        return notebook, title, fm + content, updated
+
     parts = [f"# {title}\n"]
     if body.strip():
         parts.append("\n" + body.strip("\n") + "\n")
@@ -298,13 +333,4 @@ def brief_to_note(n):
         if lines:
             parts.append("\n" + "\n".join(lines) + "\n")
 
-    fm = build_front_matter(
-        tags=tags,
-        pinned=bool(n.get("pinned")),
-        extra={
-            "color": n.get("color") if isinstance(n.get("color"), str) else "",
-            "brief_id": n["id"],
-            "created": n.get("createdAt") if parse_iso(n.get("createdAt")) else "",
-        },
-    )
-    return notebook, title, fm + "".join(parts), parse_iso(n.get("updatedAt"))
+    return notebook, title, fm + "".join(parts), updated
