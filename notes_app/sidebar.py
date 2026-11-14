@@ -367,7 +367,7 @@ class SidebarView(Gtk.Box):
         self.exp_nb_zip_btn.set_sensitive(False) # Default when All Notes is selected
         ws_box.append(self.exp_nb_zip_btn)
         
-        self.exp_nb_json_btn = Gtk.Button(label="Export Active Notebook (JSON)...")
+        self.exp_nb_json_btn = Gtk.Button(label="Export Active Notebook (JSON, also for Brief)...")
         self.exp_nb_json_btn.set_has_frame(False)
         self.exp_nb_json_btn.connect("clicked", self._on_export_notebook_json_clicked, ws_popover)
         self.exp_nb_json_btn.set_sensitive(False)
@@ -381,15 +381,10 @@ class SidebarView(Gtk.Box):
         exp_proj_zip_btn.connect("clicked", self._on_export_project_zip_clicked, ws_popover)
         ws_box.append(exp_proj_zip_btn)
         
-        exp_proj_json_btn = Gtk.Button(label="Export Entire Project (JSON)...")
+        exp_proj_json_btn = Gtk.Button(label="Export Entire Project (JSON, also for Brief)...")
         exp_proj_json_btn.set_has_frame(False)
         exp_proj_json_btn.connect("clicked", self._on_export_project_json_clicked, ws_popover)
         ws_box.append(exp_proj_json_btn)
-
-        exp_brief_btn = Gtk.Button(label="Export Entire Project for Brief (JSON)...")
-        exp_brief_btn.set_has_frame(False)
-        exp_brief_btn.connect("clicked", self._on_export_brief_clicked, ws_popover)
-        ws_box.append(exp_brief_btn)
         
         ws_box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
         
@@ -971,35 +966,6 @@ class SidebarView(Gtk.Box):
                         win._show_toast("Failed to export project")
             dialog.destroy()
             
-        dialog.connect("response", on_response)
-        dialog.show()
-
-    def _on_export_brief_clicked(self, btn, popover):
-        popover.popdown()
-        dialog = Gtk.FileChooserNative(
-            title="Export Project for Brief",
-            transient_for=self.get_root(),
-            action=Gtk.FileChooserAction.SAVE,
-            accept_label="Export",
-            cancel_label="Cancel"
-        )
-        import datetime
-        dialog.set_current_name(f"brief-export-{datetime.date.today().isoformat()}.json")
-
-        filter_json = Gtk.FileFilter()
-        filter_json.set_name("JSON files (*.json)")
-        filter_json.add_pattern("*.json")
-        dialog.add_filter(filter_json)
-
-        def on_response(dialog, response_id):
-            if response_id == Gtk.ResponseType.ACCEPT:
-                dest = dialog.get_file().get_path()
-                ok = self.file_manager.export_to_brief(dest)
-                win = self.get_root()
-                if win and hasattr(win, '_show_toast'):
-                    win._show_toast("Exported for Brief successfully" if ok else "Failed to export for Brief")
-            dialog.destroy()
-
         dialog.connect("response", on_response)
         dialog.show()
 

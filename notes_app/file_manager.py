@@ -1247,16 +1247,8 @@ def hello_world():
             return False
 
     def export_note_to_json(self, note_path, dest_path):
-        """Serialize a note to a versioned interchange JSON file."""
-        try:
-            data = self.get_note_as_dict(note_path)
-            if data:
-                with open(dest_path, 'w', encoding='utf-8') as f:
-                    json.dump({"version": 1, "notes": [data]}, f, indent=4, ensure_ascii=False)
-                return True
-        except Exception as e:
-            print(f"Error exporting note to json: {e}")
-        return False
+        """Export one note as JSON that both notes-sync and Brief can import."""
+        return self.export_to_brief(dest_path, paths=[note_path])
 
     def import_note_from_markdown(self, src_path, target_notebook=None):
         """Import an external markdown file into the notes directory/notebook."""
@@ -1396,22 +1388,8 @@ def hello_world():
             return False
 
     def export_notebook_to_json(self, notebook_name, dest_path):
-        """Export all notes in a notebook to a versioned interchange JSON file."""
-        try:
-            notebook_dir = self.notes_dir if not notebook_name else os.path.join(self.notes_dir, notebook_name)
-            notes = []
-            if os.path.exists(notebook_dir):
-                for file in sorted(os.listdir(notebook_dir)):
-                    if file.endswith('.md'):
-                        note_data = self.get_note_as_dict(os.path.join(notebook_dir, file))
-                        if note_data:
-                            notes.append(note_data)
-            with open(dest_path, 'w', encoding='utf-8') as f:
-                json.dump({"version": 1, "notes": notes}, f, indent=4, ensure_ascii=False)
-            return True
-        except Exception as e:
-            print(f"Error exporting notebook to json: {e}")
-            return False
+        """Export a notebook as JSON that both notes-sync and Brief can import."""
+        return self.export_to_brief(dest_path, notebook=notebook_name)
 
     def export_project_to_zip(self, dest_path):
         """Export all notebooks and root notes as a nested ZIP of markdown files."""
@@ -1431,18 +1409,8 @@ def hello_world():
             return False
 
     def export_project_to_json(self, dest_path):
-        """Export the entire workspace as a versioned interchange JSON file.
-
-        Same format as notebook/single-note export; each note carries its "notebook".
-        """
-        try:
-            notes = [n for n in (self.get_note_as_dict(p) for p in self._all_note_paths()) if n]
-            with open(dest_path, 'w', encoding='utf-8') as f:
-                json.dump({"version": 1, "notes": notes}, f, indent=4, ensure_ascii=False)
-            return True
-        except Exception as e:
-            print(f"Error exporting project to json: {e}")
-            return False
+        """Export every note as JSON that both notes-sync and Brief can import."""
+        return self.export_to_brief(dest_path)
 
     def _all_note_paths(self, notebook=False):
         """Paths of notes in the root and every notebook (or one notebook if given)."""
@@ -1466,7 +1434,7 @@ def hello_world():
     # ------------------------------------------------------------------
 
     def export_to_brief(self, dest_path, notebook=False, paths=None):
-        """Write a Brief-compatible export of the whole workspace, one notebook, or given notes.
+        """Write the shared JSON export (Brief + notes-sync) of everything, one notebook, or given notes.
 
         notebook=False → everything; None → root notes only; str → that notebook.
         paths, if given, overrides notebook and exports exactly those note files.
@@ -1478,7 +1446,7 @@ def hello_world():
                 with open(path, 'r', encoding='utf-8') as f:
                     raw = f.read()
                 rel = os.path.relpath(path, self.notes_dir).replace(os.sep, '/')
-                notes.append(nf.note_to_brief(raw, rel, os.path.getmtime(path)))
+                notes.append(nf.note_to_export(raw, rel, os.path.getmtime(path)))
             import time
             with open(dest_path, 'w', encoding='utf-8') as f:
                 json.dump(nf.make_brief_payload(notes, time.time()), f, indent=2, ensure_ascii=False)

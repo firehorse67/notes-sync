@@ -89,6 +89,39 @@ class FileManagerIOTests(unittest.TestCase):
         self.assertIn(f"brief_id: {shop['id']}", text)
         self.assertIn("tags: [errands]", text)
 
+    def test_every_json_export_is_brief_format(self):
+        path = self.write("Work/Plan.md", "---\ntags: [q4]\n---\n# Plan\n\nBody\n")
+        for export in (lambda: self.fm.export_note_to_json(path, self.out),
+                       lambda: self.fm.export_notebook_to_json("Work", self.out),
+                       lambda: self.fm.export_project_to_json(self.out)):
+            self.assertTrue(export())
+            with open(self.out) as f:
+                payload = json.load(f)
+            self.assertEqual(payload["app"], "brief")
+            self.assertEqual(payload["schemaVersion"], 1)
+            self.assertIn("Plan", [n["title"] for n in payload["notes"]])
+
+    def test_own_export_restores_markdown_verbatim(self):
+        original = "Intro line first\n\n## Later heading\n\n```sh\n# x\n```\n"
+        path = self.write("Work/Odd.md", "---\ntags: [a]\n---\n" + original)
+        self.assertTrue(self.fm.export_note_to_json(path, self.out))
+        os.remove(path)
+        self.assertTrue(self.fm.import_note_from_json(self.out, None))
+        restored = [p for p in os.listdir(os.path.join(self.notes, "Work")) if p.endswith(".md")]
+        self.assertEqual(len(restored), 1)
+        with open(os.path.join(self.notes, "Work", restored[0])) as f:
+            fm_text, body = f.read().split("---\n", 2)[1:]
+        self.assertEqual(body, original)
+        self.assertIn("tags: [a]", fm_text)
+
+    def test_old_notes_sync_json_still_imports(self):
+        src = os.path.join(self.tmp.name, "old.json")
+        with open(src, "w") as f:
+            json.dump({"version": 1, "notes": [{"title": "Old", "content": "# Old\n", "tags": [],
+                                                "pinned": False, "notebook": ""}]}, f)
+        self.assertTrue(self.fm.import_project_from_json(src))
+        self.assertTrue(os.path.exists(os.path.join(self.notes, "Old.md")))
+
     def test_single_note_brief_export(self):
         path = self.write("Work/Plan.md", "---\ntags: [q4]\n---\n# Plan\n\nBody\n")
         self.assertTrue(self.fm.export_to_brief(self.out, paths=[path]))
