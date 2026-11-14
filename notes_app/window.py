@@ -5,7 +5,7 @@ from gi.repository import Gtk, Adw, Gio, GLib, GObject, Gdk
 from .sidebar import SidebarView
 from .editor import MarkdownEditor
 from .config import load_local_config, save_local_config
-from .ai_helper import call_gemini_api, call_deepseek_api, call_deepseek_api_streaming
+from .ai_helper import call_gemini_api, call_deepseek_api, call_deepseek_api_streaming, DEFAULT_GEMINI_MODEL
 import os
 import threading
 
@@ -33,6 +33,11 @@ class SettingsDialog(Adw.PreferencesWindow):
         self.gemini_key_row = Adw.PasswordEntryRow(title="Gemini API Key")
         self.gemini_key_row.set_text(self.config.get("gemini_api_key", ""))
         group.add(self.gemini_key_row)
+
+        # Gemini model (configurable so a newer model can be used as soon as Google publishes its ID)
+        self.gemini_model_row = Adw.EntryRow(title=f"Gemini Model (default {DEFAULT_GEMINI_MODEL})")
+        self.gemini_model_row.set_text(self.config.get("gemini_model", ""))
+        group.add(self.gemini_model_row)
         
         # DeepSeek API Key Row
         self.deepseek_key_row = Adw.PasswordEntryRow(title="DeepSeek API Key")
@@ -46,6 +51,7 @@ class SettingsDialog(Adw.PreferencesWindow):
         self.config["ai_enabled"] = is_active
         self.config["ai_provider"] = "Enabled" if is_active else "Disabled"
         self.config["gemini_api_key"] = self.gemini_key_row.get_text().strip()
+        self.config["gemini_model"] = self.gemini_model_row.get_text().strip()
         self.config["deepseek_api_key"] = self.deepseek_key_row.get_text().strip()
         
         save_local_config(self.config)
@@ -1151,7 +1157,8 @@ class MainWindow(Adw.ApplicationWindow):
                 api_key = config.get("gemini_api_key", "").strip()
                 if not api_key:
                     raise ValueError("Gemini API key is not configured in Settings.")
-                response_text = call_gemini_api(api_key, prompt, pdf_path=pdf_path, workspace_info=workspace_info)
+                response_text = call_gemini_api(api_key, prompt, pdf_path=pdf_path, workspace_info=workspace_info,
+                                                model=config.get("gemini_model") or None)
             else:
                 api_key = config.get("deepseek_api_key", "").strip()
                 if not api_key:

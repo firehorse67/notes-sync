@@ -1,9 +1,23 @@
 import base64
 import os
 
-def call_gemini_api(api_key, prompt, pdf_path=None, workspace_info=None):
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
-    headers = {"Content-Type": "application/json"}
+DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
+
+
+def _raise_api_error(response, provider):
+    """Raise a readable error for a non-200 response without exposing the request URL."""
+    try:
+        msg = response.json()["error"]["message"]
+    except Exception:
+        msg = f"HTTP {response.status_code} {response.reason or ''}".strip()
+    raise ValueError(f"{provider}: {msg}")
+
+
+def call_gemini_api(api_key, prompt, pdf_path=None, workspace_info=None, model=None):
+    model = (model or DEFAULT_GEMINI_MODEL).strip()
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    # Key goes in a header, not the query string, so it can't leak via error messages or logs.
+    headers = {"Content-Type": "application/json", "x-goog-api-key": api_key}
     
     system_instruction = (
         "You are a helpful notes assistant. You assist the user with editing, writing, and searching notes.\n"
@@ -44,12 +58,7 @@ def call_gemini_api(api_key, prompt, pdf_path=None, workspace_info=None):
     import requests
     response = requests.post(url, json=payload, headers=headers, timeout=45)
     if response.status_code != 200:
-        try:
-            err_json = response.json()
-            err_msg = err_json["error"]["message"]
-            raise ValueError(err_msg)
-        except Exception:
-            response.raise_for_status()
+        _raise_api_error(response, "Gemini")
     res_data = response.json()
     
     try:
@@ -86,10 +95,7 @@ def call_deepseek_api(api_key, prompt, note_content=None, workspace_info=None):
     }
     response = requests.post(url, json=payload, headers=headers, timeout=45)
     if response.status_code != 200:
-        try:
-            raise ValueError(response.json()["error"]["message"])
-        except Exception:
-            response.raise_for_status()
+        _raise_api_error(response, "DeepSeek")
     try:
         return response.json()["choices"][0]["message"]["content"]
     except (KeyError, IndexError):
@@ -112,10 +118,7 @@ def call_deepseek_api_streaming(api_key, prompt, note_content=None, workspace_in
     }
     response = requests.post(url, json=payload, headers=headers, timeout=60, stream=True)
     if response.status_code != 200:
-        try:
-            raise ValueError(response.json()["error"]["message"])
-        except Exception:
-            response.raise_for_status()
+        _raise_api_error(response, "DeepSeek")
     full_text = ""
     for line in response.iter_lines():
         if not line:

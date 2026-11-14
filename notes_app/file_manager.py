@@ -6,6 +6,7 @@ import tempfile
 import threading
 from gi.repository import GObject, Gio, GLib
 from .config import ensure_notes_dir
+from . import note_format as nf
 
 class FileManager(GObject.Object):
     __gsignals__ = {
@@ -120,29 +121,12 @@ class FileManager(GObject.Object):
                                 if needs_parse:
                                     with open(path, "r", encoding="utf-8") as f:
                                         content = f.read()
-                                    fm, body = self._split_front_matter(content)
-                                    
-                                    tags = []
-                                    pinned = False
-                                    if fm:
-                                        for line in fm.splitlines():
-                                            stripped = line.strip()
-                                            if stripped.startswith("tags:"):
-                                                tags_str = stripped.split(":", 1)[1].strip()
-                                                if tags_str.startswith("[") and tags_str.endswith("]"):
-                                                    tags_str = tags_str[1:-1]
-                                                tags = [t.strip() for t in tags_str.split(",") if t.strip()]
-                                            elif stripped == "pinned: true":
-                                                pinned = True
-                                                
-                                    title = None
-                                    for line in body.splitlines():
-                                        if line.strip().startswith("#"):
-                                            title = line.strip().lstrip("#").strip()
-                                            break
-                                    if not title:
-                                        title = os.path.basename(path)[:-3]
-                                        
+                                    parsed = nf.parse_note(content, os.path.basename(path)[:-3])
+                                    fm, body = parsed['front_matter'], parsed['content']
+                                    tags = parsed['meta']['tags']
+                                    pinned = parsed['meta']['pinned']
+                                    title = parsed['title']
+
                                     metadata_updates[path] = {
                                         'mtime': mtime,
                                         'tags': tags,
@@ -190,14 +174,7 @@ class FileManager(GObject.Object):
 
     def _split_front_matter(self, raw_content):
         """Splits raw note content into (front_matter_str, body_str)."""
-        lines = raw_content.splitlines(keepends=True)
-        if len(lines) > 0 and lines[0].strip() == "---":
-            for i in range(1, len(lines)):
-                if lines[i].strip() == "---":
-                    front_matter = "".join(lines[:i+1])
-                    body = "".join(lines[i+1:])
-                    return front_matter, body
-        return "", raw_content
+        return nf.split_front_matter(raw_content)
 
     def _get_active_dir(self):
         """Get path to the currently active directory."""
@@ -793,7 +770,7 @@ def hello_world():
             return False
 
         # Sanitise tag values: strip characters that would break inline YAML
-        clean_tags = [t.replace(']', '').replace('[', '').replace('"', '').replace('\n', '').strip() for t in tags]
+        clean_tags = [nf.clean_tag(t) for t in tags]
         clean_tags = [t for t in clean_tags if t]
 
         try:
@@ -816,8 +793,7 @@ def hello_world():
                     if line.startswith("tags:"):
                         tags_line_index = i
 
-            tags_str = ", ".join(clean_tags)
-            new_tags_line = f"tags: [{tags_str}]"
+            new_tags_line = nf.format_tags_line(clean_tags)
 
             self.cancel_autosave_timer()
 
@@ -1006,32 +982,25 @@ def hello_world():
 
     # --- Import / Export Core Methods ---
     def get_note_as_dict(self, file_path):
-        """Return interchange-format dict: title, content (markdown), tags, pinned, notebook."""
+        """Return interchange-format dict: title, content (markdown), tags, pinned, notebook.
+
+        Parses the file directly rather than trusting the metadata cache, which can be
+        cold (just imported/synced) or stale (edited since the last index).
+        """
         try:
             if not os.path.exists(file_path):
                 return None
-
             with open(file_path, "r", encoding="utf-8") as f:
-                lines = f.readlines()
-
-            content_start_line = 0
-            if lines and lines[0].strip() == "---":
-                for i in range(1, len(lines)):
-                    if lines[i].strip() == "---":
-                        content_start_line = i + 1
-                        break
-
-            content = "".join(lines[content_start_line:])
-            meta = self._get_front_matter_metadata(file_path)
-            title = self.get_display_title(file_path)
+                raw = f.read()
+            basename = os.path.basename(file_path)
+            note = nf.parse_note(raw, basename[:-3] if basename.endswith(".md") else basename)
             rel_dir = os.path.dirname(os.path.relpath(file_path, self.notes_dir))
-            notebook = "" if rel_dir == "." else rel_dir
             return {
-                "title": title,
-                "content": content,
-                "tags": meta['tags'],
-                "pinned": meta['pinned'],
-                "notebook": notebook,
+                "title": note['title'],
+                "content": note['content'],
+                "tags": note['meta']['tags'],
+                "pinned": note['meta']['pinned'],
+                "notebook": "" if rel_dir in (".", "") else rel_dir,
             }
         except Exception as e:
             print(f"Error reading note as dict {file_path}: {e}")
@@ -1327,34 +1296,41 @@ def hello_world():
             content = str(note_data.get("content", ""))
             pinned = bool(note_data.get("pinned", False))
 
-            if notebook_name:
-                nb_path = os.path.join(self.notes_dir, notebook_name)
-                os.makedirs(nb_path, exist_ok=True)
-
+            notebook_name = self._resolve_notebook(notebook_name)
             target_dir = self.notes_dir if not notebook_name else os.path.join(self.notes_dir, notebook_name)
-            safe_title = "".join(c for c in title if c.isalnum() or c in (' ', '_', '-')).strip() or "Imported Note"
-            dest_path = os.path.join(target_dir, f"{safe_title}.md")
-            counter = 1
-            while os.path.exists(dest_path):
-                dest_path = os.path.join(target_dir, f"{safe_title}_{counter}.md")
-                counter += 1
+            os.makedirs(target_dir, exist_ok=True)
+            dest_path = self._unique_note_path(target_dir, title)
 
             with open(dest_path, 'w', encoding='utf-8') as f:
-                fm = ["---", f"tags: [{', '.join(tags)}]"]
-                if pinned:
-                    fm.append("pinned: true")
-                fm.append("---")
-                f.write("\n".join(fm) + "\n")
+                f.write(nf.build_front_matter(tags=tags, pinned=pinned))
                 f.write(content)
             return True
         except Exception as e:
             print(f"Error writing imported note: {e}")
             return False
 
+    def _resolve_notebook(self, name):
+        """Existing notebook names pass through; anything else is reduced to a safe folder name."""
+        if not name:
+            return None
+        if name in self.get_notebooks():
+            return name
+        return nf.safe_notebook_name(name)
+
+    def _unique_note_path(self, target_dir, title):
+        safe_title = "".join(c for c in title if c.isalnum() or c in (' ', '_', '-')).strip() or "Imported Note"
+        dest_path = os.path.join(target_dir, f"{safe_title}.md")
+        counter = 1
+        while os.path.exists(dest_path):
+            dest_path = os.path.join(target_dir, f"{safe_title}_{counter}.md")
+            counter += 1
+        return dest_path
+
     def import_note_from_json(self, src_path, target_notebook=None):
         """Import notes from a JSON file.
 
-        Handles three formats:
+        Handles four formats:
+        - Brief export:           {"app": "brief", "schemaVersion": 1, "notes": [...]}
         - Versioned interchange:  {"version": 1, "notes": [...]}  — each note's "notebook" field
           is used to place it unless the user explicitly chose a notebook (target_notebook != None).
         - Array:                  [{title, content, tags, ...}, ...]
@@ -1367,6 +1343,9 @@ def hello_world():
 
             with open(src_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
+
+            if nf.is_brief_payload(data):
+                return self.import_brief_payload(data, target_notebook) > 0
 
             is_interchange = isinstance(data, dict) and isinstance(data.get('notes'), list) and 'version' in data
 
@@ -1387,16 +1366,12 @@ def hello_world():
                 if target_notebook is not None or not is_interchange:
                     nb = target_notebook
                 else:
-                    raw_nb = note_data.get("notebook", "")
-                    if raw_nb and isinstance(raw_nb, str):
-                        safe_nb = "".join(c for c in raw_nb if c.isalnum() or c in (' ', '_', '-')).strip()
-                        nb = safe_nb or None
-                    else:
-                        nb = None
+                    nb = nf.safe_notebook_name(note_data.get("notebook", ""))
                 if self._write_imported_note(note_data, nb):
                     imported_any = True
 
             if imported_any:
+                self.emit('notebooks-changed')
                 self.emit('files-changed')
             return imported_any
         except Exception as e:
@@ -1438,21 +1413,6 @@ def hello_world():
             print(f"Error exporting notebook to json: {e}")
             return False
 
-    def get_notebook_as_dict(self, notebook_name):
-        notebook_dir = self.notes_dir if not notebook_name else os.path.join(self.notes_dir, notebook_name)
-        notes = []
-        if os.path.exists(notebook_dir):
-            for file in os.listdir(notebook_dir):
-                if file.endswith('.md'):
-                    full_path = os.path.join(notebook_dir, file)
-                    note_data = self.get_note_as_dict(full_path)
-                    if note_data:
-                        notes.append(note_data)
-        return {
-            "notebook": notebook_name or "Root",
-            "notes": notes
-        }
-
     def export_project_to_zip(self, dest_path):
         """Export all notebooks and root notes as a nested ZIP of markdown files."""
         try:
@@ -1471,32 +1431,108 @@ def hello_world():
             return False
 
     def export_project_to_json(self, dest_path):
-        """Export the entire workspace to a single nested JSON backup file."""
+        """Export the entire workspace as a versioned interchange JSON file.
+
+        Same format as notebook/single-note export; each note carries its "notebook".
+        """
         try:
-            project_data = {
-                "version": "1.0",
-                "root_notes": [],
-                "notebooks": []
-            }
-            # Root notes
-            for file in os.listdir(self.notes_dir):
-                full_path = os.path.join(self.notes_dir, file)
-                if os.path.isfile(full_path) and file.endswith('.md'):
-                    note_data = self.get_note_as_dict(full_path)
-                    if note_data:
-                        project_data["root_notes"].append(note_data)
-                        
-            # Notebook subdirectories
-            for notebook in self.get_notebooks():
-                notebook_data = self.get_notebook_as_dict(notebook)
-                project_data["notebooks"].append(notebook_data)
-                
+            notes = [n for n in (self.get_note_as_dict(p) for p in self._all_note_paths()) if n]
             with open(dest_path, 'w', encoding='utf-8') as f:
-                json.dump(project_data, f, indent=4, ensure_ascii=False)
+                json.dump({"version": 1, "notes": notes}, f, indent=4, ensure_ascii=False)
             return True
         except Exception as e:
             print(f"Error exporting project to json: {e}")
             return False
+
+    def _all_note_paths(self, notebook=False):
+        """Paths of notes in the root and every notebook (or one notebook if given)."""
+        if notebook is not False:
+            folders = [notebook]
+        else:
+            folders = [None] + self.get_notebooks()
+        paths = []
+        for nb in folders:
+            d = self.notes_dir if not nb else os.path.join(self.notes_dir, nb)
+            if not os.path.isdir(d):
+                continue
+            for file in sorted(os.listdir(d)):
+                full = os.path.join(d, file)
+                if file.endswith('.md') and os.path.isfile(full):
+                    paths.append(full)
+        return paths
+
+    # ------------------------------------------------------------------
+    # Brief (github.com/firehorse67/brief) interchange
+    # ------------------------------------------------------------------
+
+    def export_to_brief(self, dest_path, notebook=False):
+        """Write a Brief-compatible export of the whole workspace, or one notebook.
+
+        notebook=False → everything; None → root notes only; str → that notebook.
+        Notebooks are carried as "notebook:<name>" labels so they survive a round trip.
+        """
+        try:
+            notes = []
+            for path in self._all_note_paths(notebook):
+                with open(path, 'r', encoding='utf-8') as f:
+                    raw = f.read()
+                rel = os.path.relpath(path, self.notes_dir).replace(os.sep, '/')
+                notes.append(nf.note_to_brief(raw, rel, os.path.getmtime(path)))
+            import time
+            with open(dest_path, 'w', encoding='utf-8') as f:
+                json.dump(nf.make_brief_payload(notes, time.time()), f, indent=2, ensure_ascii=False)
+            return True
+        except Exception as e:
+            print(f"Error exporting to Brief: {e}")
+            return False
+
+    def _find_note_by_brief_id(self, brief_id):
+        for path in self._all_note_paths():
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    fm, _ = nf.split_front_matter(f.read())
+                if fm and nf.parse_front_matter(fm).get('brief_id') == brief_id:
+                    return path
+            except OSError:
+                continue
+        return None
+
+    def import_brief_payload(self, data, target_notebook=None):
+        """Import a parsed Brief export. Returns the number of notes written.
+
+        A note whose brief_id already exists is overwritten in place (matching Brief's own
+        overwrite-by-id import), so re-importing the same export doesn't create duplicates.
+        """
+        try:
+            notes = nf.validate_brief_payload(data)
+        except ValueError as e:
+            print(f"Rejected Brief import: {e}")
+            return 0
+
+        count = 0
+        for n in notes:
+            try:
+                label_nb, title, text, updated_ts = nf.brief_to_note(n)
+                dest = self._find_note_by_brief_id(n['id'])
+                if dest is None:
+                    nb = self._resolve_notebook(target_notebook) if target_notebook else label_nb
+                    target_dir = self.notes_dir if not nb else os.path.join(self.notes_dir, nb)
+                    os.makedirs(target_dir, exist_ok=True)
+                    dest = self._unique_note_path(target_dir, title)
+                with open(dest, 'w', encoding='utf-8') as f:
+                    f.write(text)
+                if updated_ts:
+                    os.utime(dest, (updated_ts, updated_ts))
+                self._cached_front_matter.pop(dest, None)
+                count += 1
+            except Exception as e:
+                print(f"Error importing Brief note {n.get('id')}: {e}")
+
+        if count:
+            self.build_search_index_async()
+            self.emit('notebooks-changed')
+            self.emit('files-changed')
+        return count
 
     def import_notebook_from_zip(self, src_path):
         """Extract a ZIP archive of markdown files and merge into active notebook or workspace."""
@@ -1544,7 +1580,7 @@ def hello_world():
             return False
 
     def import_project_from_json(self, src_path):
-        """Restore all notebooks and notes from a JSON project backup or interchange file."""
+        """Restore notebooks and notes from a JSON project backup, interchange or Brief file."""
         try:
             if os.path.getsize(src_path) > 50 * 1024 * 1024:
                 print(f"Refusing oversized project JSON import: {src_path}")
@@ -1553,6 +1589,9 @@ def hello_world():
             with open(src_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
 
+            if nf.is_brief_payload(data):
+                return self.import_brief_payload(data) > 0
+
             imported_any = False
 
             # Versioned interchange format: {"version": 1, "notes": [...]}
@@ -1560,11 +1599,7 @@ def hello_world():
                 for note_data in data['notes']:
                     if not isinstance(note_data, dict):
                         continue
-                    raw_nb = note_data.get("notebook", "")
-                    nb = None
-                    if raw_nb and isinstance(raw_nb, str):
-                        safe_nb = "".join(c for c in raw_nb if c.isalnum() or c in (' ', '_', '-')).strip()
-                        nb = safe_nb or None
+                    nb = nf.safe_notebook_name(note_data.get("notebook", ""))
                     if self._write_imported_note(note_data, nb):
                         imported_any = True
 
@@ -1574,9 +1609,10 @@ def hello_world():
                     if isinstance(note_data, dict) and self._write_imported_note(note_data, None):
                         imported_any = True
                 for notebook_data in data.get("notebooks", []):
-                    nb_name = notebook_data.get("notebook")
-                    if nb_name == "Root":
-                        nb_name = None
+                    if not isinstance(notebook_data, dict):
+                        continue
+                    raw_nb = notebook_data.get("notebook")
+                    nb_name = None if raw_nb == "Root" else nf.safe_notebook_name(raw_nb)
                     for note_data in notebook_data.get("notes", []):
                         if isinstance(note_data, dict) and self._write_imported_note(note_data, nb_name):
                             imported_any = True
@@ -1588,4 +1624,3 @@ def hello_world():
         except Exception as e:
             print(f"Error importing project from json: {e}")
             return False
-
