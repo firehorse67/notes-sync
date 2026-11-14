@@ -29,12 +29,25 @@ A native Linux WYSIWYG notes application built with Python, GTK4, and Libadwaita
 - **Gemini** is used for PDF interrogation — when a note has a PDF attachment, check *Ask Gemini about PDF* to query it directly
 - Workspace context (note list + contents) is cached in the background so queries are fast even on a network-mounted drive
 - Responses stream token-by-token so the first words appear within a couple of seconds
+- The Gemini model can be changed in **Settings** (defaults to `gemini-2.5-flash`)
 - Configure API keys in **Settings** (gear icon); both keys are stored locally in `~/.config/notes-sync/config.json` and are never committed to the repository
 
 ### Import / Export
 - Export a single note as Markdown, JSON, or PDF
 - Export a notebook or the entire project as a ZIP archive or JSON bundle
 - Import notes from Markdown or JSON; import notebooks from ZIP
+- **Brief compatibility** — *Export Entire Project for Brief (JSON)* writes a file that [Brief](https://github.com/firehorse67/brief) can import, and the JSON import buttons accept Brief exports
+  - Notebooks travel as `notebook:<name>` labels; tags ↔ labels; the first `# heading` ↔ title
+  - Each note keeps a stable `brief_id` (and `color`, `created`) in its front matter, so re-importing overwrites instead of duplicating
+  - Brief list notes become bullet lists; attachments aren't carried over
+
+---
+
+## Tests
+
+```bash
+python3 -m unittest discover -s tests -t .
+```
 
 ---
 

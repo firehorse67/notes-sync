@@ -385,6 +385,11 @@ class SidebarView(Gtk.Box):
         exp_proj_json_btn.set_has_frame(False)
         exp_proj_json_btn.connect("clicked", self._on_export_project_json_clicked, ws_popover)
         ws_box.append(exp_proj_json_btn)
+
+        exp_brief_btn = Gtk.Button(label="Export Entire Project for Brief (JSON)...")
+        exp_brief_btn.set_has_frame(False)
+        exp_brief_btn.connect("clicked", self._on_export_brief_clicked, ws_popover)
+        ws_box.append(exp_brief_btn)
         
         ws_box.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
         
@@ -394,7 +399,7 @@ class SidebarView(Gtk.Box):
         imp_nb_zip_btn.connect("clicked", self._on_import_notebook_zip_clicked, ws_popover)
         ws_box.append(imp_nb_zip_btn)
         
-        imp_proj_json_btn = Gtk.Button(label="Import Project from JSON...")
+        imp_proj_json_btn = Gtk.Button(label="Import Project from JSON or Brief...")
         imp_proj_json_btn.set_has_frame(False)
         imp_proj_json_btn.connect("clicked", self._on_import_project_json_clicked, ws_popover)
         ws_box.append(imp_proj_json_btn)
@@ -966,6 +971,35 @@ class SidebarView(Gtk.Box):
                         win._show_toast("Failed to export project")
             dialog.destroy()
             
+        dialog.connect("response", on_response)
+        dialog.show()
+
+    def _on_export_brief_clicked(self, btn, popover):
+        popover.popdown()
+        dialog = Gtk.FileChooserNative(
+            title="Export Project for Brief",
+            transient_for=self.get_root(),
+            action=Gtk.FileChooserAction.SAVE,
+            accept_label="Export",
+            cancel_label="Cancel"
+        )
+        import datetime
+        dialog.set_current_name(f"brief-export-{datetime.date.today().isoformat()}.json")
+
+        filter_json = Gtk.FileFilter()
+        filter_json.set_name("JSON files (*.json)")
+        filter_json.add_pattern("*.json")
+        dialog.add_filter(filter_json)
+
+        def on_response(dialog, response_id):
+            if response_id == Gtk.ResponseType.ACCEPT:
+                dest = dialog.get_file().get_path()
+                ok = self.file_manager.export_to_brief(dest)
+                win = self.get_root()
+                if win and hasattr(win, '_show_toast'):
+                    win._show_toast("Exported for Brief successfully" if ok else "Failed to export for Brief")
+            dialog.destroy()
+
         dialog.connect("response", on_response)
         dialog.show()
 
